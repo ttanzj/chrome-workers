@@ -1,0 +1,249 @@
+addEventListener('fetch', event => {
+  event.respondWith(handleRequest(event.request));
+});
+
+// KV 命名空间绑定变量名必须是 PROXY_KV
+// 在 Cloudflare 仪表盘 → Workers → 你的 Worker → Settings → Bindings → KV Namespace Bindings 添加绑定
+// Variable name: PROXY_KV
+
+const CACHE_KEY = 'merged_proxy_nodes_base64';
+const CACHE_TTL_SECONDS = 12 * 60 * 60; // 12小时
+
+async function handleRequest(request) {
+  // 尝试从 KV 读取缓存
+  let cached = await PROXY_KV.get(CACHE_KEY);
+  if (cached) {
+    return new Response(cached, {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+    });
+  }
+
+  const uniqueStrings = new Set();
+
+  // 所有去重后的源地址（两批合并，已去除完全相同的 URL）
+  const sites = [
+    // hysteria
+    { url: "https://www.gitlabip.xyz/Alvin9999/pac2/master/hysteria/1/config.json", type: "hysteria" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/hysteria/config.json", type: "hysteria" },
+    { url: "https://www.githubip.xyz/Alvin9999/pac2/master/hysteria/config.json", type: "hysteria" },
+    { url: "https://fastly.jsdelivr.net/gh/Alvin9999/pac2@latest/hysteria/config.json", type: "hysteria" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/pac2/master/hysteria/13/config.json", type: "hysteria" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/hysteria/2/config.json", type: "hysteria" },
+    { url: "https://www.githubip.xyz/Alvin9999/pac2/master/hysteria/2/config.json", type: "hysteria" },
+    { url: "https://fastly.jsdelivr.net/gh/Alvin9999/pac2@latest/hysteria/2/config.json", type: "hysteria" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria/1/config.json", type: "hysteria" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria/2/config.json", type: "hysteria" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria/3/config.json", type: "hysteria" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria/4/config.json", type: "hysteria" },
+
+    // hysteria2
+    { url: "https://www.gitlabip.xyz/Alvin9999/pac2/master/hysteria2/1/config.json", type: "hysteria2" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/hysteria2/config.json", type: "hysteria2" },
+    { url: "https://www.githubip.xyz/Alvin9999/pac2/master/hysteria2/config.json", type: "hysteria2" },
+    { url: "https://fastly.jsdelivr.net/gh/Alvin9999/pac2@latest/hysteria2/config.json", type: "hysteria2" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/pac2/master/hysteria2/13/config.json", type: "hysteria2" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/hysteria2/2/config.json", type: "hysteria2" },
+    { url: "https://www.githubip.xyz/Alvin9999/pac2/master/hysteria2/2/config.json", type: "hysteria2" },
+    { url: "https://fastly.jsdelivr.net/gh/Alvin9999/pac2@latest/hysteria2/2/config.json", type: "hysteria2" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria2/1/config.json", type: "hysteria2" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria2/2/config.json", type: "hysteria2" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria2/3/config.json", type: "hysteria2" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/hysteria2/4/config.json", type: "hysteria2" },
+
+    // xray
+    { url: "https://www.gitlabip.xyz/Alvin9999/pac2/master/xray/1/config.json", type: "xray" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/xray/config.json", type: "xray" },
+    { url: "https://www.githubip.xyz/Alvin9999/pac2/master/xray/config.json", type: "xray" },
+    { url: "https://fastly.jsdelivr.net/gh/Alvin9999/pac2@latest/xray/config.json", type: "xray" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/pac2/master/xray/3/config.json", type: "xray" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/xray/2/config.json", type: "xray" },
+    { url: "https://www.githubip.xyz/Alvin9999/pac2/master/xray/2/config.json", type: "xray" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/xray/1/config.json", type: "xray" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/xray/2/config.json", type: "xray" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/xray/3/config.json", type: "xray" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/xray/4/config.json", type: "xray" },
+
+    // singbox
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/singbox/config.json", type: "singbox" },
+    { url: "https://www.githubip.xyz/Alvin9999/pac2/master/singbox/config.json", type: "singbox" },
+    { url: "https://fastly.jsdelivr.net/gh/Alvin9999/pac2@latest/singbox/config.json", type: "singbox" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/pac2/master/singbox/1/config.json", type: "singbox" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/singbox/1/config.json", type: "singbox" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/singbox/2/config.json", type: "singbox" },
+
+    // naive
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/master/naiveproxy/1/config.json", type: "naive" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/naiveproxy/config.json", type: "naive" },
+    { url: "https://www.githubip.xyz/Alvin9999/PAC/master/naiveproxy/config.json", type: "naive" },
+    { url: "https://fastly.jsdelivr.net/gh/Alvin9999/PAC@latest/naiveproxy/config.json", type: "naive" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/naiveproxy/1/config.json", type: "naive" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/naiveproxy/2/config.json", type: "naive" },
+
+    // juicity
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/juicity/1/config.json", type: "juicity" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/juicity/1/config.json", type: "juicity" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/juicity/2/config.json", type: "juicity" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/juicity/2/config.json", type: "juicity" },
+
+    // mieru
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/mieru/1/config.json", type: "mieru" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/mieru/1/config.json", type: "mieru" },
+    { url: "https://www.gitlabip.xyz/Alvin9999/PAC/refs/heads/master/backup/img/1/2/ipp/mieru/2/config.json", type: "mieru" },
+    { url: "https://gitlab.com/free9999/ipupdate/-/raw/master/backup/img/1/2/ipp/mieru/2/config.json", type: "mieru" }
+  ];
+
+  // 并行抓取（使用 allSettled 防止单个失败影响整体）
+  await Promise.allSettled(
+    sites.map(site => processOneSite(site, uniqueStrings))
+  );
+
+  const content = [...uniqueStrings].join('\n');
+
+  // 转 Base64
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(content);
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+
+  // 存入 KV，设置过期时间
+  await PROXY_KV.put(CACHE_KEY, base64, { expirationTtl: CACHE_TTL_SECONDS });
+
+  return new Response(base64, {
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+  });
+}
+
+async function processOneSite(site, set) {
+  try {
+    const resp = await fetch(site.url, { cf: { cacheTtl: 300 } }); // 源站缓存5分钟
+    if (!resp.ok) return;
+
+    let data;
+    if (site.type === 'naive' || site.type === 'juicity' || site.type === 'mieru') {
+      data = await resp.json().catch(() => ({}));
+    } else {
+      data = await resp.json().catch(() => ({}));
+    }
+
+    if (site.type === "hysteria") {
+      processHysteria(data, set);
+    } else if (site.type === "hysteria2") {
+      processHysteria2(data, set);
+    } else if (site.type === "xray") {
+      processXray(data, set);
+    } else if (site.type === "singbox") {
+      processSingbox(data, set);
+    } else if (site.type === "naive") {
+      processNaive(data, set);
+    } else if (site.type === "juicity") {
+      processJuicity(data, set);
+    } else if (site.type === "mieru") {
+      processMieru(data, set);
+    }
+  } catch (e) {
+    // 静默失败
+  }
+}
+
+// 处理器函数（保持简单、安全，避免 undefined 崩溃）
+
+function safeGet(obj, path, def = '') {
+  try {
+    return path.split('.').reduce((o, k) => o?.[k], obj) ?? def;
+  } catch {
+    return def;
+  }
+}
+
+function processHysteria(data, set) {
+  const server = safeGet(data, 'server');
+  if (!server) return;
+  const params = new URLSearchParams({
+    upmbps: safeGet(data, 'up_mbps'),
+    downmbps: safeGet(data, 'down_mbps'),
+    auth: safeGet(data, 'auth_str'),
+    insecure: '1',
+    peer: safeGet(data, 'server_name'),
+    alpn: safeGet(data, 'alpn')
+  });
+  set.add(`hysteria://${server}?${params}`);
+}
+
+function processHysteria2(data, set) {
+  const auth = safeGet(data, 'auth', '');
+  const server = safeGet(data, 'server');
+  if (!server) return;
+  const insecure = safeGet(data, 'tls.insecure') ? '1' : '0';
+  const sni = safeGet(data, 'tls.sni', '');
+  set.add(`hysteria2://${auth}@${server}?insecure=${insecure}&sni=${sni}`);
+}
+
+function processXray(data, set) {
+  const ob = safeGet(data, 'outbounds.0');
+  if (!ob) return;
+  const vnext = safeGet(ob, 'settings.vnext.0');
+  const user = safeGet(vnext, 'users.0');
+  if (!user?.id || !vnext?.address) return;
+
+  const stream = safeGet(ob, 'streamSettings', {});
+  const tls = safeGet(stream, 'tlsSettings', {});
+  const ws = safeGet(stream, 'wsSettings', {});
+  const fp = tls.fingerprint || (tls.serverName ? 'chrome' : '');
+
+  const params = new URLSearchParams({
+    security: stream.security || 'none',
+    sni: tls.serverName || '',
+    fp,
+    type: stream.network || 'tcp'
+  });
+  if (stream.network === 'ws') {
+    params.set('path', safeGet(ws, 'path', ''));
+    params.set('host', safeGet(ws, 'headers.Host', ''));
+  }
+
+  const link = `${ob.protocol}://${user.id}@${vnext.address}:${vnext.port}?${params}`;
+  set.add(link);
+}
+
+function processSingbox(data, set) {
+  const ob = safeGet(data, 'outbounds.0');
+  if (!ob?.server || !ob?.server_port) return;
+  const params = new URLSearchParams({
+    upmbps: ob.up_mbps || '',
+    downmbps: ob.down_mbps || '',
+    auth: ob.auth_str || '',
+    insecure: '1',
+    peer: safeGet(ob, 'tls.server_name', ''),
+    alpn: safeGet(ob, 'tls.alpn.0', '')
+  });
+  set.add(`hysteria://${ob.server}:${ob.server_port}?${params}`);
+}
+
+function processNaive(data, set) {
+  const proxy = safeGet(data, 'proxy', '');
+  if (proxy) set.add(proxy);
+}
+
+function processJuicity(data, set) {
+  const server = safeGet(data, 'server', '');
+  const port = safeGet(data, 'port', '') || safeGet(data, 'server_port', '');
+  const uuid = safeGet(data, 'uuid', '') || safeGet(data, 'password', '');
+  if (!server || !port || !uuid) return;
+  const sni = safeGet(data, 'sni', '');
+  const insecure = safeGet(data, 'allow_insecure') ? '1' : '0';
+  const cc = safeGet(data, 'congestion_control', 'bbr');
+  const params = new URLSearchParams({ sni, congestion_control: cc, alpn: 'h3', allow_insecure: insecure });
+  set.add(`juicity://${uuid}@${server}:${port}?${params}`);
+}
+
+function processMieru(data, set) {
+  try {
+    const json = JSON.stringify(data);
+    const b64 = btoa(unescape(encodeURIComponent(json)));
+    set.add(`mieru://${b64}#mieru`);
+  } catch {}
+}
