@@ -1,4 +1,4 @@
-##workers-1
+## workers-1
 
 部署提醒在 Cloudflare 仪表盘创建 KV Namespace（名称随意）  
 在 Worker → Settings → Bindings → KV Namespace Bindings 添加：Variable name：PROXY_KV  
