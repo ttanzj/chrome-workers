@@ -1,4 +1,4 @@
-Workers1-3 | [workers-kv](README.domain.md) | [日本語](README.ja-JP.md)
+Workers1-3 | [workers-kv](README.domain.md) 
 
 ## workers-1
 
