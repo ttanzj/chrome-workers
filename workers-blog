@@ -1,0 +1,471 @@
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const method = req.method;
+    const PASSWORD = env.PASSWORD;
+
+    const html = (b) =>
+      new Response(b, { headers: { "content-type": "text/html;charset=UTF-8" } });
+
+    const redirect = (to) =>
+      new Response(null, { status: 302, headers: { Location: to } });
+
+    const isLogin = () =>
+      req.headers.get("cookie")?.includes("login=1");
+
+    /* ---------- 登录 ---------- */
+    if (url.pathname === "/login") {
+      if (method === "POST") {
+        const f = await req.formData();
+        if (f.get("password") === PASSWORD) {
+          return new Response("", {
+            status: 302,
+            headers: {
+              "Set-Cookie": "login=1; Path=/; SameSite=Lax",
+              Location: "/",
+            },
+          });
+        }
+        return html(loginPage("密码错误"));
+      }
+      return html(loginPage());
+    }
+    if (!isLogin()) return redirect("/login");
+
+    /* ---------- 新建 ---------- */
+    if (url.pathname === "/create" && method === "POST") {
+      const f = await req.formData();
+      const now = new Date().toISOString();
+      await env.DB.prepare(
+        `INSERT INTO docs (title, category, tags, content, pinned, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`
+      ).bind(
+        f.get("title"),
+        f.get("category"),
+        f.get("tags"),
+        f.get("content"),
+        now,
+        now
+      ).run();
+      return redirect("/");
+    }
+
+    /* ---------- 切换置顶 ---------- */
+    if (url.pathname === "/pin") {
+      const id = url.searchParams.get("id");
+      await env.DB.prepare(
+        `UPDATE docs 
+         SET pinned = CASE WHEN pinned = 1 THEN 0 ELSE 1 END,
+             updated_at = ?
+         WHERE id = ?`
+      ).bind(new Date().toISOString(), id).run();
+      return redirect("/");
+    }
+
+    /* ---------- 删除 ---------- */
+    if (url.pathname === "/delete") {
+      await env.DB.prepare(`DELETE FROM docs WHERE id=?`)
+        .bind(url.searchParams.get("id")).run();
+      return redirect("/");
+    }
+
+    /* ---------- 查看 ---------- */
+    if (url.pathname === "/view") {
+      const doc = await env.DB.prepare(`SELECT * FROM docs WHERE id=?`)
+        .bind(url.searchParams.get("id")).first();
+      return html(viewPage(doc));
+    }
+
+    /* ---------- 编辑 ---------- */
+    if (url.pathname === "/edit") {
+      const id = url.searchParams.get("id");
+      if (method === "POST") {
+        const f = await req.formData();
+        await env.DB.prepare(
+          `UPDATE docs SET title=?, category=?, tags=?, content=?, updated_at=?
+           WHERE id=?`
+        ).bind(
+          f.get("title"),
+          f.get("category"),
+          f.get("tags"),
+          f.get("content"),
+          new Date().toISOString(),
+          id
+        ).run();
+        return redirect("/");
+      }
+      const doc = await env.DB.prepare(`SELECT * FROM docs WHERE id=?`)
+        .bind(id).first();
+      return html(editPage(doc));
+    }
+
+    /* ---------- 首页 ---------- */
+    const categoryFilter = url.searchParams.get("category") || "";
+
+    const docs = await env.DB.prepare(`
+      SELECT * FROM docs 
+      WHERE (? = '' OR category = ?)
+      ORDER BY pinned DESC, updated_at DESC
+    `).bind(categoryFilter, categoryFilter).all();
+
+    const categories = await env.DB.prepare(
+      `SELECT DISTINCT category FROM docs 
+       WHERE category IS NOT NULL AND category != '' 
+       ORDER BY category`
+    ).all();
+
+    return html(indexPage(docs.results, categories.results, categoryFilter));
+  },
+};
+
+/* ================= Markdown ================= */
+function md(t) {
+  return t
+    .replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>")
+    .replace(/^### (.*)$/gm, "<h3>$1</h3>")
+    .replace(/^## (.*)$/gm, "<h2>$1</h2>")
+    .replace(/^# (.*)$/gm, "<h1>$1</h1>")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`(.*?)`/g, "<code>$1</code>")
+    .replace(/\n/g, "<br>");
+}
+
+/* ================= 页面 ================= */
+function baseStyle() {
+  return `
+<style>
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: #f4f6f8;
+}
+.container {
+  max-width: 1150px;
+  margin: 0 auto;
+  padding: 20px;
+}
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+button {
+  padding: 8px 16px;
+  font-size: 14px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.btn-primary { background: #2563eb; color: #fff; }
+.btn-ghost { background: #e5e7eb; color: #333; }
+
+input, textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 15px;
+  margin-top: 8px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+}
+textarea { min-height: 240px; line-height: 1.6; }
+
+/* 文档列表 */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
+  gap: 14px;
+}
+
+.doc-item {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+}
+.doc-item:hover {
+  border-color: #c3d0ff;
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.12);
+  transform: translateY(-2px);
+}
+
+/* ================== 列表模式（紧凑一行） ================== */
+.list .doc-item {
+  display: flex;
+  align-items: center;
+  min-height: 48px;           /* 行高大幅减小（约减小1/3） */
+  padding: 10px 18px;
+}
+.list .title-line {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+}
+.list .title {
+  font-weight: 600;
+  font-size: 16px;
+  cursor: pointer;
+  color: #1f2937;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.list .tags {
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+.list .actions {
+  margin-left: auto;
+  display: flex;
+  gap: 18px;
+  font-size: 18.5px;
+  flex-shrink: 0;
+}
+
+/* ================== 卡片模式 ================== */
+.grid .doc-item {
+  text-align: center;
+  padding: 16px 14px;
+  min-height: 152px;
+  display: flex;
+  flex-direction: column;
+}
+.grid .title-line {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.grid .title {
+  font-weight: 600;
+  font-size: 15.8px;
+  cursor: pointer;
+  color: #1f2937;
+}
+.grid .tags {
+  margin-bottom: 12px;
+  min-height: 26px;
+}
+.grid .actions {
+  margin-top: auto;
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  font-size: 19.5px;
+}
+
+.title:hover { color: #2563eb; }
+.pin-icon { color: #f59e0b; font-size: 18.5px; }
+
+.tag {
+  background: #f1f5f9;
+  color: #475569;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.actions a {
+  text-decoration: none;
+  transition: transform 0.2s;
+}
+.actions a:hover {
+  transform: scale(1.18);
+}
+
+/* 分类筛选 */
+.category-filter {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+.category-btn {
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+.category-btn.active {
+  background: #2563eb;
+  color: white;
+  border-color: #2563eb;
+}
+
+/* 移动端适配 */
+@media (max-width: 680px) {
+  .list .doc-item {
+    min-height: 52px;
+    padding: 11px 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .list .actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .grid {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+}
+</style>`;
+}
+
+function loginPage(msg="") {
+  return `
+${baseStyle()}
+<div class="container" style="max-width:420px;margin-top:140px">
+  <div class="card">
+    <h2 style="text-align:center">文档系统登录</h2>
+    ${msg ? `<p style="color:red;text-align:center">${msg}</p>` : ""}
+    <form method="post">
+      <input type="password" name="password" placeholder="请输入密码">
+      <button class="btn-primary" style="width:100%;margin-top:16px">登录</button>
+    </form>
+  </div>
+</div>`;
+}
+
+function indexPage(docs, categories, currentCategory) {
+  const allCategories = [{category: ""}, ...categories];
+
+  return `
+${baseStyle()}
+<div class="container">
+  <div class="header">
+    <h2>📄 文档管理</h2>
+    <div>
+      <button class="btn-ghost" onclick="toggleLayout()">切换排列</button>
+      <button class="btn-primary" onclick="toggleNew()">➕ 新建</button>
+    </div>
+  </div>
+
+  <!-- 分类筛选 -->
+  <div class="category-filter">
+    ${allCategories.map(c => {
+      const cat = c.category || "";
+      const name = cat === "" ? "全部" : cat;
+      const active = cat === currentCategory ? "active" : "";
+      return `<a href="?category=${encodeURIComponent(cat)}" class="category-btn ${active}">${name}</a>`;
+    }).join("")}
+  </div>
+
+  <div id="newBox" class="card" style="display:none">
+    <form method="post" action="/create">
+      <input name="title" placeholder="标题" required>
+      <input name="category" placeholder="分类">
+      <input name="tags" placeholder="标签（逗号分隔）">
+      <textarea name="content" placeholder="Markdown 内容"></textarea>
+      <div style="margin-top:14px">
+        <button class="btn-primary">保存文档</button>
+        <button type="button" class="btn-ghost" onclick="toggleNew()">取消</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="docList" class="list">
+    ${docs.map(d => `
+      <div class="doc-item">
+        <div class="title-line">
+          ${d.pinned === 1 ? `<span class="pin-icon">📌</span>` : ''}
+          <span class="title" onclick="location.href='/view?id=${d.id}'">${escape(d.title)}</span>
+        </div>
+
+        <div class="tags">
+          ${(d.tags||"").split(",").filter(Boolean).map(t => 
+            `<span class="tag">${escape(t.trim())}</span>`
+          ).join(" ")}
+        </div>
+
+        <div class="actions">
+          <a href="/pin?id=${d.id}" title="${d.pinned === 1 ? '取消置顶' : '置顶'}">
+            ${d.pinned === 1 ? '⭐' : '☆'}
+          </a>
+          <a href="/edit?id=${d.id}" title="编辑">✏️</a>
+          <a href="/delete?id=${d.id}" onclick="return confirm('确认删除此文档？')" title="删除">🗑️</a>
+        </div>
+      </div>
+    `).join("")}
+  </div>
+</div>
+
+<script>
+let grid = false;
+
+function toggleNew() {
+  const b = document.getElementById('newBox');
+  b.style.display = b.style.display === 'none' ? 'block' : 'none';
+}
+
+function toggleLayout() {
+  grid = !grid;
+  const l = document.getElementById('docList');
+  l.className = grid ? 'grid' : 'list';
+}
+</script>`;
+}
+
+function viewPage(d) {
+  return `
+${baseStyle()}
+<div class="container">
+  <div class="card">
+    <h1>${escape(d.title)}</h1>
+    ${d.category ? `<p style="color:#666;margin:8px 0">分类：${escape(d.category)}</p>` : ''}
+    <div style="margin:20px 0; line-height:1.7">${md(escape(d.content))}</div>
+    <a href="/" style="color:#2563eb;font-size:15px">← 返回文档列表</a>
+  </div>
+</div>`;
+}
+
+function editPage(d) {
+  return `
+${baseStyle()}
+<div class="container">
+  <div class="card">
+    <h2>编辑文档</h2>
+    <form method="post">
+      <input name="title" value="${escape(d.title)}" required>
+      <input name="category" value="${escape(d.category || '')}">
+      <input name="tags" value="${escape(d.tags || '')}">
+      <textarea name="content">${escape(d.content)}</textarea>
+      <div style="margin-top:16px">
+        <button class="btn-primary">保存修改</button>
+        <a href="/" style="margin-left:16px;color:#2563eb">取消</a>
+      </div>
+    </form>
+  </div>
+</div>`;
+}
+
+function escape(s = "") {
+  return s.replace(/[&<>"']/g, m => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[m]));
+}
