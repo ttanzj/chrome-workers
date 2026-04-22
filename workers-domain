@@ -38,17 +38,15 @@ export default {
     let path = url.pathname;
     if (path === '' || path === '/') path = '/';
 
-    // ====================== favicon 处理 ======================
     if (path === '/favicon.ico') {
       return new Response(null, { status: 204 });
     }
 
-    // ====================== 密码保护（使用你提供的严格逻辑） ======================
+    // ====================== 密码保护逻辑 ======================
     if (PASSWORD) {
       const cookieHeader = request.headers.get('cookie') || '';
       const isAuthenticated = cookieHeader.includes(`domain_auth=${PASSWORD}`);
 
-      // 1. 处理登录提交
       if (path === '/login' && request.method === 'POST') {
         const formData = await request.formData();
         if (formData.get('password') === PASSWORD) {
@@ -60,14 +58,12 @@ export default {
             },
           });
         } else {
-          // 密码错误，直接返回登录页并中断
           return new Response(generateLoginHTML(sitename, true), {
             headers: { 'Content-Type': 'text/html; charset=utf-8' },
           });
         }
       }
 
-      // 2. 未登录则拦截一切请求
       if (!isAuthenticated) {
         if (path.startsWith('/api/')) {
           return new Response(JSON.stringify({ success: false, message: '未授权访问' }), {
@@ -75,7 +71,6 @@ export default {
             headers: { 'Content-Type': 'application/json' },
           });
         }
-        // 普通页面请求返回登录页
         return new Response(generateLoginHTML(sitename, false), {
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
         });
@@ -94,7 +89,6 @@ export default {
       if (request.method === 'POST') {
         const body = await request.json();
         const { action, index, domainData, newOrder } = body;
-
         let domainsData = await getDomainsData(env);
 
         if (action === 'reorder' && newOrder) {
@@ -110,10 +104,6 @@ export default {
               !domainData.registrationDate || !domainData.expirationDate) {
             return new Response(JSON.stringify({ success: false, message: '除特别说明外，所有字段不能为空' }), { status: 400 });
           }
-          if (!isValidDate(domainData.registrationDate) || !isValidDate(domainData.expirationDate)) {
-            return new Response(JSON.stringify({ success: false, message: '注册时间和过期时间必须是有效日期格式 (YYYY-MM-DD)' }), { status: 400 });
-          }
-
           if (action === 'add') {
             domainsData.push(domainData);
           } else if (action === 'save' && typeof index === 'number') {
@@ -121,16 +111,13 @@ export default {
           }
         } else if (action === 'delete' && typeof index === 'number') {
           domainsData.splice(index, 1);
-        } else {
-          return new Response(JSON.stringify({ success: false, message: '无效操作' }), { status: 400 });
         }
-
         await saveDomainsData(env, domainsData);
         return new Response(JSON.stringify({ success: true }));
       }
     }
 
-    // ====================== 主页面 + TG 提醒 ======================
+    // ====================== 主页面逻辑 ======================
     if (path === '/') {
       const domainsData = await getDomainsData(env);
       const today = new Date().toISOString().split('T')[0];
@@ -138,11 +125,9 @@ export default {
       for (const domain of domainsData) {
         const expirationDate = new Date(domain.expirationDate);
         const daysRemaining = Math.ceil((expirationDate - Date.now()) / (1000 * 60 * 60 * 24));
-
         if (daysRemaining > 0 && daysRemaining <= days) {
           const message = `⚠️ <b>域名到期提醒</b>\n\n域名：${domain.domain}\n将在 <b>${daysRemaining}</b> 天后过期\n过期日期：${domain.expirationDate}`;
           const lastSentDate = await env.DOMAINS_TG_KV?.get(domain.domain);
-
           if (lastSentDate !== today) {
             await sendtgMessage(message, tgid, tgtoken);
             if (env.DOMAINS_TG_KV) await env.DOMAINS_TG_KV.put(domain.domain, today, { expirationTtl: 172800 });
@@ -150,22 +135,18 @@ export default {
         }
       }
 
-      const htmlContent = generateHTML(domainsData, sitename, !!PASSWORD);
-      return new Response(htmlContent, {
+      return new Response(generateHTML(domainsData, sitename, !!PASSWORD), {
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       });
     }
 
-    // ====================== 兜底：未知路径返回首页 ======================
     const domainsData = await getDomainsData(env);
-    const htmlContent = generateHTML(domainsData, sitename, !!PASSWORD);
-    return new Response(htmlContent, {
+    return new Response(generateHTML(domainsData, sitename, !!PASSWORD), {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
   }
 };
 
-// ====================== KV 操作 ======================
 async function getDomainsData(env) {
   if (!env.DOMAINS_KV) return [];
   const data = await env.DOMAINS_KV.get('domains', 'json');
@@ -173,18 +154,12 @@ async function getDomainsData(env) {
 }
 
 async function saveDomainsData(env, data) {
-  if (!env.DOMAINS_KV) throw new Error('DOMAINS_KV 未绑定');
   await env.DOMAINS_KV.put('domains', JSON.stringify(data));
 }
 
-function isValidDate(dateStr) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
-  const date = new Date(dateStr);
-  return date instanceof Date && !isNaN(date.getTime());
-}
-
-// ====================== 登录页面（优化版） ======================
+// ====================== 页面生成函数 ======================
 function generateLoginHTML(sitename, error = false) {
+  const errorMsg = error ? '<div class="error">❌ 密码错误</div>' : '<p style="color:#666">请输入访问密码</p>';
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -192,22 +167,17 @@ function generateLoginHTML(sitename, error = false) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>登录 - ${sitename}</title>
   <style>
-    body { font-family: system-ui, Arial, sans-serif; background: linear-gradient(135deg, #f5f7fa, #e4e9f2); display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-    .login-box { background: white; padding: 40px 35px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.12); width: 360px; text-align: center; }
-    h2 { margin: 0 0 8px 0; color: #2c3e50; }
-    p { color: #555; margin-bottom: 25px; }
-    .error { color: #e74c3c; background: #fdf2f2; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 15px; display: flex; align-items: center; gap: 8px; border-left: 4px solid #e74c3c; }
-    input { width: 100%; padding: 14px 16px; margin: 8px 0; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }
-    input:focus { outline: none; border-color: #3498db; box-shadow: 0 0 0 3px rgba(52,152,219,0.1); }
-    button { width: 100%; padding: 14px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: 600; margin-top: 10px; }
-    button:hover { background: #2980b9; }
+    body { font-family: system-ui, Arial, sans-serif; background: #f4f7f9; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .login-box { background: white; padding: 40px 30px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 340px; text-align: center; }
+    input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
+    button { width: 100%; padding: 12px; background: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    .error { color: #e74c3c; margin-bottom: 10px; font-size: 14px; }
   </style>
 </head>
 <body>
   <div class="login-box">
     <h2>${sitename}</h2>
-    <p>请输入访问密码</p>
-    ${error ? `<div class="error">❌ 密码错误，请重试</div>` : ''}
+    ${errorMsg}
     <form method="POST" action="/login">
       <input type="password" name="password" placeholder="输入密码" required autofocus>
       <button type="submit">登录</button>
@@ -217,34 +187,35 @@ function generateLoginHTML(sitename, error = false) {
 </html>`;
 }
 
-// ====================== 主页面 ======================
 function generateHTML(domainsData, SITENAME, hasPassword) {
   const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
   const rowsHTML = domainsData.map((info, index) => {
     const expDate = new Date(info.expirationDate);
+    expDate.setHours(0, 0, 0, 0);
     const daysRemaining = Math.ceil((expDate - today) / (86400000));
     const isExpired = today > expDate;
 
     return `<tr data-index="${index}" data-domain="${info.domain || ''}" draggable="true">
-      <td class="drag-handle" style="display:none; width:40px; text-align:center; vertical-align:middle;">
-        <span style="cursor: grab; font-size: 22px; color: #64748b; user-select:none;">≡</span>
+      <td class="drag-handle" data-label="排序" style="display:none; width:40px; text-align:center;">
+        <span style="cursor: grab; font-size: 22px; color: #64748b;">≡</span>
       </td>
-      <td>
-        <span class="status-dot" style="background-color: ${isExpired ? '#e74c3c' : '#2ecc71'};" title="${isExpired ? '已过期' : '正常'}"></span>
+      <td data-label="状态" style="text-align:center;">
+        <span class="status-dot" style="background-color: ${isExpired ? '#e74c3c' : '#2ecc71'};"></span>
       </td>
-      <td class="domain-cell">
+      <td data-label="域名" class="domain-cell">
         <span class="domain-name">${info.domain || ''}</span>
         <span class="edit-icons" style="display:none;">
           <span class="edit-icon" title="编辑">✏️</span>
           <span class="delete-icon" title="删除">🗑️</span>
         </span>
       </td>
-      <td><a href="${info.systemURL || '#'}" target="_blank" rel="noopener">${info.system || ''}</a></td>
-      <td>${info.registrationDate || ''}</td>
-      <td>${info.expirationDate || ''}</td>
-      <td>${isExpired ? '<span style="color:#e74c3c">已过期</span>' : daysRemaining + ' 天'}</td>
-      <td class="note-cell">${info.note ? info.note.replace(/\n/g, '<br>') : '<span style="color:#999">无</span>'}</td>
+      <td data-label="域名注册商"><a href="${info.systemURL || '#'}" target="_blank" rel="noopener">${info.system || ''}</a></td>
+      <td data-label="注册时间" style="text-align:center; white-space:nowrap;">${info.registrationDate || ''}</td>
+      <td data-label="过期时间" style="text-align:center; white-space:nowrap;">${info.expirationDate || ''}</td>
+      <td data-label="剩余天数" style="text-align:center; white-space:nowrap;">${isExpired ? '<span style="color:#e74c3c">已过期</span>' : daysRemaining + ' 天'}</td>
+      <td data-label="特别说明" class="note-cell">${info.note ? info.note.replace(/\\n/g, '<br>') : '<span style="color:#999">无</span>'}</td>
     </tr>`;
   }).join('');
 
@@ -254,43 +225,49 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${SITENAME}</title>
-  <link rel="icon" href="https://raw.githubusercontent.com/yutian81/yutian81.github.io/master/assets/images/domains.png" type="image/png">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>">
   <style>
     :root { --primary: #3498db; }
     * { box-sizing: border-box; }
-    body { font-family: system-ui, -apple-system, Arial, sans-serif; margin:0; padding:0; background:#f8f9fa; color:#333; min-height:100vh; display:flex; flex-direction:column; }
-    .container { flex:1; width:95%; max-width:1280px; margin:20px auto; background:#fff; box-shadow:0 4px 20px rgba(0,0,0,0.1); border-radius:10px; overflow:hidden; }
-    h1 { background:linear-gradient(135deg, var(--primary), #2980b9); color:#fff; padding:20px 25px; margin:0; font-size:1.75rem; text-align:center; cursor:pointer; user-select:none; }
-    .table-container { overflow-x:auto; padding:0 10px; }
-    table { width:100%; border-collapse:collapse; min-width:1100px; }
-    th, td { padding:14px 10px; text-align:left; border-bottom:1px solid #eee; vertical-align: middle; }
-    th { background:#f8f9fa; font-weight:600; position:sticky; top:0; z-index:10; }
-    .drag-handle { width:40px; }
-    .status-dot { display:inline-block; width:13px; height:13px; border-radius:50%; margin-right:6px; }
-    .domain-cell { position:relative; min-width:180px; }
-    .domain-name { cursor:pointer; user-select:none; font-weight:500; }
-    .edit-icons { position:absolute; top:10px; right:12px; display:flex; gap:14px; font-size:20px; }
-    .edit-icon:hover { color:#1976d2; transform:scale(1.15); }
-    .delete-icon:hover { color:#d32f2f; transform:scale(1.15); }
-    .note-cell { max-width:420px; white-space:pre-wrap; word-break:break-all; line-height:1.5; }
-    .add-icon { font-size:26px; padding:14px 32px; background:#e8f5e9; color:#388e3c; border:2px dashed #4caf50; border-radius:10px; cursor:pointer; }
-    .add-icon:hover { background:#c8e6c9; }
-    tr { transition: all 0.2s; }
-    tr.dragging { opacity: 0.6; background: #f0f9ff; }
-    tr.over { border-top: 4px solid #3b82f6; }
-    .footer { text-align:center; padding:16px; background:var(--primary); color:#fff; font-size:0.92rem; }
-    .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:1000; }
-    .modal-content { background:white; border-radius:12px; width:92%; max-width:540px; max-height:92vh; overflow-y:auto; box-shadow:0 15px 35px rgba(0,0,0,0.25); }
-    .modal-header { padding:20px 24px; border-bottom:1px solid #eee; font-size:1.3rem; font-weight:600; }
-    .modal-body { padding:24px; }
-    .form-group { margin-bottom:18px; }
-    label { display:block; margin-bottom:6px; font-weight:500; color:#444; }
-    input, textarea { width:100%; padding:11px 12px; border:1px solid #ccc; border-radius:6px; font-size:1rem; }
-    textarea { resize:vertical; min-height:88px; }
-    .modal-footer { padding:18px 24px; border-top:1px solid #eee; display:flex; gap:12px; justify-content:flex-end; }
-    .btn { padding:11px 24px; border:none; border-radius:6px; cursor:pointer; font-size:1rem; }
-    .btn-cancel { background:#f1f1f1; color:#333; }
-    .btn-save { background:var(--primary); color:white; }
+    body { font-family: system-ui, Arial, sans-serif; margin:0; padding:0; background:#f8f9fa; color:#333; }
+    .container { width:95%; max-width:1280px; margin:20px auto; background:#fff; box-shadow:0 4px 20px rgba(0,0,0,0.08); border-radius:12px; overflow:hidden; }
+    h1 { background:linear-gradient(135deg, var(--primary), #2980b9); color:#fff; padding:20px; margin:0; font-size:1.5rem; text-align:center; cursor:pointer; user-select:none; }
+    .table-container { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; min-width: 1000px; }
+    th { background:#fbfcfe; font-weight:600; color:#475569; padding:14px; text-align:center; white-space: nowrap; border-bottom:1px solid #eee; }
+    td { padding:14px; text-align:left; border-bottom:1px solid #eee; }
+    .status-dot { display:inline-block; width:12px; height:12px; border-radius:50%; }
+    .domain-cell { position:relative; min-width:160px; }
+    .domain-name { font-weight:500; cursor:pointer; }
+    .edit-icons { position:absolute; right:10px; top:12px; gap:12px; display:none; }
+    .add-icon { padding:12px 24px; background:#f0f9ff; color:var(--primary); border:2px dashed var(--primary); border-radius:8px; cursor:pointer; }
+    @media (max-width: 768px) {
+      .container { width:100%; margin:0; border-radius:0; box-shadow:none; }
+      table { min-width: 100%; }
+      table, thead, tbody, th, td, tr { display: block; }
+      thead { display: none; }
+      tr { margin: 12px; border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; position: relative; padding-bottom: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+      td { border: none !important; position: relative; padding-left: 40% !important; padding-top: 10px; padding-bottom: 10px; border-bottom: 1px solid #f8f9fa !important; text-align: left !important; }
+      td::before { content: attr(data-label); position: absolute; left: 15px; width: 35%; font-weight: 600; color: #64748b; font-size: 13px; }
+      .domain-cell { background: #f8faff; border-radius: 10px 10px 0 0; }
+      .edit-icons { top: 10px; right: 15px; }
+      .drag-handle { background: #f1f5f9; padding-left: 15px !important; border-radius: 10px 10px 0 0; }
+      .add-row td { padding-left: 0 !important; }
+      .add-row td::before { content: ""; }
+    }
+    .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); align-items:center; justify-content:center; z-index:1000; padding:15px; }
+    .modal-content { background:white; border-radius:12px; width:100%; max-width:500px; max-height:90vh; overflow-y:auto; }
+    .modal-header { padding:18px; border-bottom:1px solid #eee; font-weight:600; font-size:1.1rem; }
+    .modal-body { padding:18px; }
+    .form-group { margin-bottom:15px; }
+    .form-group label { display:block; margin-bottom:5px; font-weight:500; font-size:14px; }
+    input, textarea { width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:14px; }
+    .modal-footer { padding:15px; border-top:1px solid #eee; display:flex; gap:10px; justify-content:flex-end; }
+    .btn-common { padding:10px 24px; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; border:none; transition: opacity 0.2s; }
+    .btn-cancel { background: #e2e8f0; color: #475569; }
+    .btn-save { background: var(--primary); color: white; }
+    .footer { text-align:center; padding:20px; font-size:0.85rem; color:#666; }
+    .dragging { opacity: 0.5; background: #e0e0e0; }
   </style>
 </head>
 <body>
@@ -300,7 +277,7 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
       <table id="domainsTable">
         <thead>
           <tr>
-            <th class="drag-th" style="width:40px; display:none;">排序</th>
+            <th class="drag-th" style="display:none; width:40px;">排序</th>
             <th>状态</th>
             <th>域名</th>
             <th>域名注册商</th>
@@ -313,8 +290,8 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
         <tbody id="tableBody">
           ${rowsHTML}
           <tr class="add-row">
-            <td colspan="8" style="text-align:center; padding:30px 10px;">
-              <span class="add-icon" id="addNewBtn" style="display:none;">➕ 添加新记录</span>
+            <td colspan="8" style="text-align:center; padding:20px;">
+              <span class="add-icon" id="addNewBtn" style="display:none;">➕ 添加新域名记录</span>
             </td>
           </tr>
         </tbody>
@@ -322,47 +299,25 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
     </div>
   </div>
 
-  <!-- 编辑/添加模态框 -->
   <div id="editModal" class="modal">
     <div class="modal-content">
       <div class="modal-header" id="modalTitle">编辑域名信息</div>
       <div class="modal-body">
-        <div class="form-group">
-          <label>域名 <span style="color:#e74c3c">*</span></label>
-          <input type="text" id="editDomain" placeholder="example.com">
-        </div>
-        <div class="form-group">
-          <label>注册商名称 <span style="color:#e74c3c">*</span></label>
-          <input type="text" id="editSystem" placeholder="阿里云 / GoDaddy 等">
-        </div>
-        <div class="form-group">
-          <label>注册商网站地址 <span style="color:#e74c3c">*</span></label>
-          <input type="url" id="editSystemURL" placeholder="https://www.aliyun.com">
-        </div>
-        <div class="form-group">
-          <label>注册时间 <span style="color:#e74c3c">*</span></label>
-          <input type="date" id="editRegDate" max="9999-12-31">
-        </div>
-        <div class="form-group">
-          <label>过期时间 <span style="color:#e74c3c">*</span></label>
-          <input type="date" id="editExpDate" max="9999-12-31">
-        </div>
-        <div class="form-group">
-          <label>特别说明（可选，可换行）</label>
-          <textarea id="editNote" placeholder="此处填写特别说明、备注等..."></textarea>
-        </div>
+        <div class="form-group"><label>域名 *</label><input type="text" id="editDomain"></div>
+        <div class="form-group"><label>注册商名称 *</label><input type="text" id="editSystem"></div>
+        <div class="form-group"><label>注册商网站 *</label><input type="url" id="editSystemURL"></div>
+        <div class="form-group"><label>注册时间 *</label><input type="date" id="editRegDate"></div>
+        <div class="form-group"><label>过期时间 *</label><input type="date" id="editExpDate"></div>
+        <div class="form-group"><label>说明</label><textarea id="editNote" rows="3"></textarea></div>
       </div>
       <div class="modal-footer">
-        <button class="btn btn-cancel" onclick="closeModal()">取消</button>
-        <button class="btn btn-save" onclick="saveItem()">保存</button>
+        <button class="btn-common btn-cancel" onclick="closeModal()">取消</button>
+        <button class="btn-common btn-save" onclick="saveItem()">保存</button>
       </div>
     </div>
   </div>
 
-  <div class="footer">
-    Powered by Cloudflare Workers + KV | 双击标题进入/退出编辑模式（显示排序 ≡、编辑、删除）
-    ${hasPassword ? ' | 已启用密码保护' : ''}
-  </div>
+  <div class="footer">Powered by Cloudflare Workers | 双击标题进入编辑模式</div>
 
   <script>
     let currentEditIndex = null;
@@ -370,19 +325,17 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
 
     function toggleEditMode(el) {
       isEditMode = !isEditMode;
-      const displayValue = isEditMode ? '' : 'none';
-      document.querySelectorAll('.drag-th, .drag-handle').forEach(item => item.style.display = displayValue);
-      document.querySelectorAll('.edit-icons').forEach(icon => icon.style.display = isEditMode ? 'flex' : 'none');
+      const displayValue = isEditMode ? 'flex' : 'none';
+      document.querySelectorAll('.drag-th, .drag-handle').forEach(item => item.style.display = (isEditMode ? '' : 'none'));
+      document.querySelectorAll('.edit-icons').forEach(icon => icon.style.display = displayValue);
       const addBtn = document.getElementById('addNewBtn');
       if (addBtn) addBtn.style.display = isEditMode ? 'inline-block' : 'none';
-      if (el) el.style.color = isEditMode ? '#f59e0b' : '#fff';
+      if (el) el.style.background = isEditMode ? '#e67e22' : '';
     }
 
     function openEditPanel(index = null) {
       currentEditIndex = index;
       const modal = document.getElementById('editModal');
-      const title = document.getElementById('modalTitle');
-
       document.getElementById('editDomain').value = '';
       document.getElementById('editSystem').value = '';
       document.getElementById('editSystemURL').value = '';
@@ -391,29 +344,24 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
       document.getElementById('editNote').value = '';
 
       if (index !== null) {
-        title.textContent = '编辑域名信息';
+        document.getElementById('modalTitle').textContent = '编辑域名信息';
         const row = document.querySelector('tr[data-index="' + index + '"]');
         if (row) {
           const cells = row.cells;
           document.getElementById('editDomain').value = cells[2].querySelector('.domain-name').textContent.trim();
           document.getElementById('editSystem').value = cells[3].textContent.trim();
-          const link = cells[3].querySelector('a');
-          document.getElementById('editSystemURL').value = link ? link.getAttribute('href') : '';
+          document.getElementById('editSystemURL').value = cells[3].querySelector('a') ? cells[3].querySelector('a').href : '';
           document.getElementById('editRegDate').value = cells[4].textContent.trim();
           document.getElementById('editExpDate').value = cells[5].textContent.trim();
-          const noteCell = cells[7];
-          document.getElementById('editNote').value = (noteCell.textContent.trim() === '无') ? '' : noteCell.innerHTML.replace(/<br>/g, '\\n');
+          document.getElementById('editNote').value = (cells[7].textContent.trim() === '无') ? '' : cells[7].innerHTML.replace(/<br>/g, '\\n');
         }
       } else {
-        title.textContent = '添加新域名记录';
+        document.getElementById('modalTitle').textContent = '添加新域名记录';
       }
       modal.style.display = 'flex';
     }
 
-    function closeModal() {
-      document.getElementById('editModal').style.display = 'none';
-      currentEditIndex = null;
-    }
+    function closeModal() { document.getElementById('editModal').style.display = 'none'; }
 
     async function saveItem() {
       const domainData = {
@@ -424,142 +372,75 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
         expirationDate: document.getElementById('editExpDate').value,
         note: document.getElementById('editNote').value.trim()
       };
-
       const action = currentEditIndex !== null ? 'save' : 'add';
-
-      try {
-        const res = await fetch('/api/domains', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, index: currentEditIndex, domainData })
-        });
-        const result = await res.json();
-        if (result.success) location.reload();
-        else alert(result.message || '保存失败');
-      } catch (e) {
-        alert('网络错误，请重试');
-      }
+      const res = await fetch('/api/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, index: currentEditIndex, domainData })
+      });
+      const result = await res.json();
+      if (result.success) location.reload(); else alert(result.message);
     }
 
     async function deleteItem(index) {
-      if (!confirm('确定要删除这条域名记录吗？此操作不可恢复。')) return;
-      try {
-        const res = await fetch('/api/domains', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'delete', index })
-        });
-        const result = await res.json();
-        if (result.success) location.reload();
-      } catch (e) {
-        alert('网络错误');
-      }
+      if (!confirm('确定删除？')) return;
+      const res = await fetch('/api/domains', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', index })
+      });
+      if ((await res.json()).success) location.reload();
     }
 
-    // ====================== 拖拽排序 ======================
     function initDragAndDrop() {
       const tbody = document.getElementById('tableBody');
       let draggedRow = null;
-
-      tbody.addEventListener('dragstart', (e) => {
-        if (!isEditMode) return;
-        draggedRow = e.target.closest('tr');
-        if (!draggedRow || draggedRow.classList.contains('add-row')) return;
-        e.dataTransfer.effectAllowed = 'move';
-        draggedRow.classList.add('dragging');
-      });
-
-      tbody.addEventListener('dragend', () => {
-        if (draggedRow) draggedRow.classList.remove('dragging');
-        document.querySelectorAll('tr').forEach(r => r.classList.remove('over'));
-      });
-
-      tbody.addEventListener('dragover', (e) => {
-        if (!isEditMode) return;
-        e.preventDefault();
-        const row = e.target.closest('tr');
-        if (row && !row.classList.contains('add-row')) row.classList.add('over');
-      });
-
-      tbody.addEventListener('dragleave', (e) => {
-        const row = e.target.closest('tr');
-        if (row) row.classList.remove('over');
-      });
-
+      tbody.addEventListener('dragstart', (e) => { if (isEditMode) draggedRow = e.target.closest('tr'); draggedRow.classList.add('dragging'); });
+      tbody.addEventListener('dragend', () => draggedRow.classList.remove('dragging'));
+      tbody.addEventListener('dragover', (e) => e.preventDefault());
       tbody.addEventListener('drop', async (e) => {
         if (!isEditMode) return;
-        e.preventDefault();
         const targetRow = e.target.closest('tr');
-        if (!targetRow || !draggedRow || targetRow.classList.contains('add-row')) return;
-
-        const allRows = Array.from(tbody.querySelectorAll('tr:not(.add-row)'));
-        const fromIndex = allRows.indexOf(draggedRow);
-        const toIndex = allRows.indexOf(targetRow);
-
-        if (fromIndex === toIndex) return;
-
-        if (fromIndex < toIndex) targetRow.after(draggedRow);
-        else targetRow.before(draggedRow);
-
-        const newOrder = [];
-        document.querySelectorAll('tr[data-domain]').forEach(row => {
-          newOrder.push(row.dataset.domain);
-        });
-
-        try {
-          await fetch('/api/domains', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'reorder', newOrder })
-          });
-        } catch (err) {
-          console.error('保存排序失败', err);
+        if (targetRow && targetRow !== draggedRow && !targetRow.classList.contains('add-row')) {
+          const allRows = Array.from(tbody.querySelectorAll('tr:not(.add-row)'));
+          if (allRows.indexOf(draggedRow) < allRows.indexOf(targetRow)) targetRow.after(draggedRow); else targetRow.before(draggedRow);
+          const newOrder = Array.from(document.querySelectorAll('tr[data-domain]')).map(row => row.dataset.domain);
+          await fetch('/api/domains', { method: 'POST', body: JSON.stringify({ action: 'reorder', newOrder }) });
         }
-
-        draggedRow = null;
       });
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-      document.querySelectorAll('.edit-icon').forEach(icon => {
-        icon.addEventListener('click', (e) => {
-          e.stopPropagation();
+      // 还原最原始的跳转逻辑：利用 input 事件实时截断年份
+      const dateInputs = document.querySelectorAll('input[type="date"]');
+      dateInputs.forEach(input => {
+        input.addEventListener('input', (e) => {
+          const val = e.target.value;
+          if (val) {
+            const parts = val.split('-');
+            // 当年份（parts[0]）长度达到 4 时，浏览器的 date 控件在被重新赋值后
+            // 往往会自动将焦点移向下一个部分（月份）
+            if (parts[0] && parts[0].length > 4) {
+              parts[0] = parts[0].slice(0, 4);
+              e.target.value = parts.join('-');
+            }
+          }
+        });
+      });
+
+      document.body.addEventListener('dblclick', (e) => {
+        if (e.target.classList.contains('domain-name')) {
           const row = e.target.closest('tr');
           if (row) openEditPanel(parseInt(row.dataset.index));
-        });
-      });
-
-      document.querySelectorAll('.delete-icon').forEach(icon => {
-        icon.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const row = e.target.closest('tr');
-          if (row) deleteItem(parseInt(row.dataset.index));
-        });
-      });
-
-      document.querySelectorAll('.domain-name').forEach(name => {
-        name.addEventListener('dblclick', (e) => {
-          const row = e.target.closest('tr');
-          if (row) openEditPanel(parseInt(row.dataset.index));
-        });
-      });
-
-      const addBtn = document.getElementById('addNewBtn');
-      if (addBtn) addBtn.addEventListener('click', () => openEditPanel(null));
-
-      document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-          const modal = document.getElementById('editModal');
-          if (modal.style.display === 'flex') closeModal();
         }
       });
-
-      initDragAndDrop();
-
-      document.querySelectorAll('.drag-th, .drag-handle, .edit-icons').forEach(el => {
-        el.style.display = 'none';
+      document.body.addEventListener('click', (e) => {
+        if (e.target.classList.contains('edit-icon')) openEditPanel(parseInt(e.target.closest('tr').dataset.index));
+        if (e.target.classList.contains('delete-icon')) deleteItem(parseInt(e.target.closest('tr').dataset.index));
       });
-      if (addBtn) addBtn.style.display = 'none';
+      const addBtn = document.getElementById('addNewBtn');
+      if (addBtn) addBtn.addEventListener('click', () => openEditPanel(null));
+      initDragAndDrop();
     });
   </script>
 </body>
