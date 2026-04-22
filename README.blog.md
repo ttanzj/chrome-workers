@@ -1,7 +1,9 @@
 [workers1-3](README.md)  | [workers-domain](README.domain.md) | workers-blog
-# 以下是该文档系统在 Cloudflare 上的完整部署指南、配置说明以及 Markdown 语法详细手册。
 
-## 一、 部署过程 (Cloudflare 网页端)
+
+## 本workers由AI创建的用D1数据库做存储的一个简易文档管理系统，主要为自己保存一些想法和技术资料，写法采用markdown，适配桌面和移动端。以下是该文档系统在 Cloudflare 上的完整部署指南、配置说明以及 Markdown 语法详细手册。
+
+### 一、 部署过程 (Cloudflare 网页端)
 1. 创建 D1 数据库
 登录 Cloudflare 控制台，点击左侧菜单栏的 Storage & Databases (存储与数据库) -> D1。
 
@@ -61,7 +63,7 @@ Value 填写你想要的登录密码。
 点击 Save and deploy。
 
 现在，你可以通过 Worker 提供的 *.workers.dev 域名访问你的文档系统了。
-## 二、 Markdown 支持的正则列表
+### 二、 Markdown 支持的正则列表
 当前代码通过原生正则表达式实现了一套轻量级解析引擎，其支持情况如下：
 1. 已支持语法 (Supported)
 ```
@@ -91,6 +93,9 @@ Value 填写你想要的登录密码。
 数学公式： 不支持 LaTeX 渲染（如 $E=mc^2$）。
 
 任务列表： 不支持 - [ ] 任务 复选框。
+
+3.本程序内行与行之间不用空一行。
+
 
 水平分割线： 不支持 --- 或 *** 单独成行。
 
