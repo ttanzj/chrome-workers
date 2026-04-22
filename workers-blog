@@ -103,7 +103,6 @@ export default {
 
     /* ---------- 首页 ---------- */
     const categoryFilter = url.searchParams.get("category") || "";
-
     const docs = await env.DB.prepare(`
       SELECT * FROM docs 
       WHERE (? = '' OR category = ?)
@@ -120,30 +119,50 @@ export default {
   },
 };
 
-/* ================= Markdown ================= */
+/* ================= Markdown 增强版 ================= */
 function md(t) {
   return t
-    .replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>")
-    .replace(/^### (.*)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.*)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.*)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-    .replace(/`(.*?)`/g, "<code>$1</code>")
+    // 代码块 (需最先处理)
+    .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+    // 标题 (h1-h6)
+    .replace(/^###### (.*$)/gm, '<h6>$1</h6>')
+    .replace(/^##### (.*$)/gm, '<h5>$1</h5>')
+    .replace(/^#### (.*$)/gm, '<h4>$1</h4>')
+    .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+    .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+    .replace(/^# (.*$)/gm, '<h1>$1</h1>')
+    // 引用块
+    .replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>')
+    // 加粗/斜体/删除线
+    .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/~~(.*?)~~/g, '<del>$1</del>')
+    // 图片 ![alt](url)
+    .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" style="max-width:100%">')
+    // 链接 [text](url)
+    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>')
+    // 无序列表 (简易版)
+    .replace(/^\* (.*$)/gm, '<ul><li>$1</li></ul>').replace(/<\/ul>\n<ul>/g, '')
+    .replace(/^- (.*$)/gm, '<ul><li>$1</li></ul>').replace(/<\/ul>\n<ul>/g, '')
+    // 行内代码
+    .replace(/`(.*?)`/g, '<code>$1</code>')
+    // 换行处理 (非块级元素后的回车转为 <br>)
     .replace(/\n/g, "<br>");
 }
 
-/* ================= 样式 ================= */
+/* ================= 布局与样式 ================= */
 function baseStyle() {
   return `
 <style>
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
-body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
 .header h2 { margin: 0; font-size: 22px; }
 
-button { padding: 8px 16px; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; transition: opacity 0.2s; }
+button { padding: 8px 16px; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; }
 .btn-primary { background: var(--primary); color: #fff; }
 .btn-ghost { background: #e5e7eb; color: #333; }
 
@@ -151,19 +170,22 @@ input, textarea {
   width: 100%; padding: 12px; font-size: 16px; margin-top: 8px; 
   border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; 
 }
-/* 桌面端高度增加 50% (原 240px -> 360px) */
-textarea { min-height: 360px; line-height: 1.6; font-family: inherit; resize: vertical; }
-.view-content { min-height: 450px; line-height: 1.8; word-wrap: break-word; }
+/* 桌面端高度优化 */
+textarea { min-height: 360px; line-height: 1.6; font-family: monospace; resize: vertical; }
+.view-content { min-height: 450px; word-wrap: break-word; }
+.view-content blockquote { border-left: 4px solid #ddd; padding-left: 15px; color: #666; margin: 10px 0; }
+.view-content pre { background: #f1f5f9; padding: 15px; border-radius: 8px; overflow-x: auto; font-family: monospace; }
+.view-content code { background: #f1f5f9; padding: 2px 4px; border-radius: 4px; font-family: monospace; }
 
-/* 列表/卡片通用 */
+/* 列表/卡片样式 */
 .doc-item { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; transition: all 0.2s; overflow: hidden; }
 .title { font-weight: 600; cursor: pointer; text-decoration: none; color: var(--text); }
 .tag { background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
 .actions a { text-decoration: none; font-size: 18px; }
 
-/* 模式切换 */
+/* 首页模式 */
 .list { display: flex; flex-direction: column; gap: 8px; }
-.list .doc-item { display: flex; align-items: center; padding: 12px 16px; gap: 12px; }
+.list .doc-item { display: flex; align-items: center; padding: 10px 16px; gap: 12px; }
 .list .title-line { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
 .list .actions { display: flex; gap: 15px; flex-shrink: 0; }
@@ -179,42 +201,32 @@ textarea { min-height: 360px; line-height: 1.6; font-family: inherit; resize: ve
 
 /* 移动端专用适配 */
 @media (max-width: 600px) {
-  .container { padding: 12px; }
+  .container { padding: 10px; }
   .header h2 { font-size: 18px; }
   .card { padding: 15px; margin-bottom: 10px; }
-  
-  /* 登录页居中 */
   .login-container { display: flex; align-items: center; min-height: 80vh; }
-
-  /* 列表模式更紧凑 */
   .list .doc-item { padding: 10px 12px; gap: 8px; }
   .list .title { font-size: 14px; }
   .list .actions { gap: 10px; }
-  .list .tags { display: none; } /* 移动端列表隐藏标签以节省空间 */
-
-  /* 卡片模式一行两个 */
+  .list .tags { display: none; }
   .grid { grid-template-columns: 1fr 1fr; gap: 8px; }
-  .grid .doc-item { padding: 10px; min-height: 120px; }
-  .grid .title { font-size: 14px; }
-  .grid .actions { gap: 15px; font-size: 16px; }
-
-  /* 编辑器高度自适应 */
+  .grid .doc-item { padding: 10px; min-height: 110px; }
+  .grid .title { font-size: 14px; line-height: 1.3; }
   textarea { min-height: 300px; font-size: 14px; }
-  h1 { font-size: 20px; }
+  .view-content { min-height: 300px; font-size: 15px; }
 }
 </style>`;
 }
 
 function loginPage(msg="") {
-  return `
-${baseStyle()}
+  return `${baseStyle()}
 <div class="container login-container">
   <div class="card" style="width:100%; max-width:320px; margin: 0 auto;">
     <h2 style="text-align:center; margin-bottom:20px">系统登录</h2>
     ${msg ? `<p style="color:red;text-align:center;font-size:14px">${msg}</p>` : ""}
     <form method="post">
       <input type="password" name="password" placeholder="密码" autofocus>
-      <button class="btn-primary" style="width:100%;margin-top:16px;padding:12px">进入</button>
+      <button class="btn-primary" style="width:100%;margin-top:16px;padding:12px">确认</button>
     </form>
   </div>
 </div>`;
@@ -222,17 +234,15 @@ ${baseStyle()}
 
 function indexPage(docs, categories, currentCategory) {
   const allCategories = [{category: ""}, ...categories];
-  return `
-${baseStyle()}
+  return `${baseStyle()}
 <div class="container">
   <div class="header">
-    <h2>📄 我的文档</h2>
+    <h2>📄 文档库</h2>
     <div style="display:flex; gap:8px">
-      <button class="btn-ghost" onclick="toggleLayout()" style="padding:8px">🖼️</button>
+      <button class="btn-ghost" onclick="toggleLayout()">布局</button>
       <button class="btn-primary" onclick="toggleNew()">+ 新建</button>
     </div>
   </div>
-
   <div class="category-filter">
     ${allCategories.map(c => {
       const cat = c.category || "";
@@ -240,20 +250,18 @@ ${baseStyle()}
       return `<a href="?category=${encodeURIComponent(cat)}" class="category-btn ${active}">${cat || "全部"}</a>`;
     }).join("")}
   </div>
-
   <div id="newBox" class="card" style="display:none">
     <form method="post" action="/create">
       <input name="title" placeholder="标题" required>
       <input name="category" placeholder="分类">
-      <input name="tags" placeholder="标签(逗号分隔)">
-      <textarea name="content" placeholder="正文 (支持 Markdown)"></textarea>
+      <input name="tags" placeholder="标签">
+      <textarea name="content" placeholder="Markdown 内容..."></textarea>
       <div style="margin-top:14px; display:flex; gap:10px">
         <button class="btn-primary" style="flex:1">保存</button>
         <button type="button" class="btn-ghost" onclick="toggleNew()" style="flex:1">取消</button>
       </div>
     </form>
   </div>
-
   <div id="docList" class="list">
     ${docs.map(d => `
       <div class="doc-item">
@@ -287,36 +295,34 @@ function toggleLayout() {
 }
 
 function viewPage(d) {
-  return `
-${baseStyle()}
+  return `${baseStyle()}
 <div class="container">
   <div class="card">
-    <h1 style="margin-top:0; font-size:1.5rem;">${escape(d.title)}</h1>
-    <div style="font-size:13px; color:#666; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
-      ${d.category ? `分类: ${escape(d.category)}` : '未分类'} 
+    <h1 style="margin:0 0 10px 0; font-size:1.6rem;">${escape(d.title)}</h1>
+    <div style="font-size:13px; color:#666; margin-bottom:20px; border-bottom:1px solid #eee; padding-bottom:10px;">
+      ${d.category ? `分类: ${escape(d.category)}` : '未分类'}
     </div>
     <div class="view-content">${md(escape(d.content))}</div>
     <div style="margin-top:30px; border-top:1px solid #eee; padding-top:15px">
-      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:500;">← 返回列表</a>
+      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:500;">← 返回首页</a>
     </div>
   </div>
 </div>`;
 }
 
 function editPage(d) {
-  return `
-${baseStyle()}
+  return `${baseStyle()}
 <div class="container">
   <div class="card">
-    <h3 style="margin-top:0">编辑文档</h3>
+    <h3 style="margin-top:0">编辑</h3>
     <form method="post">
-      <input name="title" value="${escape(d.title)}" required placeholder="标题">
-      <input name="category" value="${escape(d.category || '')}" placeholder="分类">
-      <input name="tags" value="${escape(d.tags || '')}" placeholder="标签">
+      <input name="title" value="${escape(d.title)}" required>
+      <input name="category" value="${escape(d.category || '')}">
+      <input name="tags" value="${escape(d.tags || '')}">
       <textarea name="content">${escape(d.content)}</textarea>
       <div style="margin-top:16px; display:flex; gap:12px">
-        <button class="btn-primary" style="flex:1; padding:12px">提交更新</button>
-        <button type="button" class="btn-ghost" onclick="location.href='/'" style="flex:1">取消</button>
+        <button class="btn-primary" style="flex:1; padding:12px">保存</button>
+        <button type="button" class="btn-ghost" onclick="history.back()" style="flex:1">返回</button>
       </div>
     </form>
   </div>
