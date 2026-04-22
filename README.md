@@ -1,4 +1,4 @@
-Workers1-3 | [workers-kv](README.domain.md) 
+Workers1-3 | [workers-kv](README.domain.md)  | [workers-blog](README.domain.blog.md)
 
 
 ### Workers1\2\3是三个chromego节点提取工具
