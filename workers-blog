@@ -5,7 +5,9 @@ export default {
     const PASSWORD = env.PASSWORD;
 
     const html = (b) =>
-      new Response(b, { headers: { "content-type": "text/html;charset=UTF-8" } });
+      new Response(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">${b}</html>`, { 
+        headers: { "content-type": "text/html;charset=UTF-8" } 
+      });
 
     const redirect = (to) =>
       new Response(null, { status: 302, headers: { Location: to } });
@@ -130,209 +132,75 @@ function md(t) {
     .replace(/\n/g, "<br>");
 }
 
-/* ================= 页面 ================= */
+/* ================= 样式 ================= */
 function baseStyle() {
   return `
 <style>
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #f4f6f8;
-}
-.container {
-  max-width: 1150px;
-  margin: 0 auto;
-  padding: 20px;
-}
-.card {
-  background: #fff;
-  border-radius: 12px;
-  padding: 20px;
-  margin-bottom: 16px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-}
-.header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-  gap: 12px;
-}
+:root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
+body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+.container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
+.card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+.header h2 { margin: 0; font-size: 22px; }
 
-button {
-  padding: 8px 16px;
-  font-size: 14px;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-}
-.btn-primary { background: #2563eb; color: #fff; }
+button { padding: 8px 16px; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; transition: opacity 0.2s; }
+.btn-primary { background: var(--primary); color: #fff; }
 .btn-ghost { background: #e5e7eb; color: #333; }
 
-input, textarea {
-  width: 100%;
-  padding: 10px 12px;
-  font-size: 15px;
-  margin-top: 8px;
-  border-radius: 8px;
-  border: 1px solid #d1d5db;
+input, textarea { 
+  width: 100%; padding: 12px; font-size: 16px; margin-top: 8px; 
+  border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; 
 }
-textarea { min-height: 240px; line-height: 1.6; }
+/* 桌面端高度增加 50% (原 240px -> 360px) */
+textarea { min-height: 360px; line-height: 1.6; font-family: inherit; resize: vertical; }
+.view-content { min-height: 450px; line-height: 1.8; word-wrap: break-word; }
 
-/* 文档列表 */
-.list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(255px, 1fr));
-  gap: 14px;
-}
+/* 列表/卡片通用 */
+.doc-item { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; transition: all 0.2s; overflow: hidden; }
+.title { font-weight: 600; cursor: pointer; text-decoration: none; color: var(--text); }
+.tag { background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
+.actions a { text-decoration: none; font-size: 18px; }
 
-.doc-item {
-  background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  transition: all 0.25s ease;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
-}
-.doc-item:hover {
-  border-color: #c3d0ff;
-  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.12);
-  transform: translateY(-2px);
-}
+/* 模式切换 */
+.list { display: flex; flex-direction: column; gap: 8px; }
+.list .doc-item { display: flex; align-items: center; padding: 12px 16px; gap: 12px; }
+.list .title-line { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+.list .actions { display: flex; gap: 15px; flex-shrink: 0; }
 
-/* ================== 列表模式（紧凑一行） ================== */
-.list .doc-item {
-  display: flex;
-  align-items: center;
-  min-height: 48px;           /* 行高大幅减小（约减小1/3） */
-  padding: 10px 18px;
-}
-.list .title-line {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  flex: 1;
-  min-width: 0;
-}
-.list .title {
-  font-weight: 600;
-  font-size: 16px;
-  cursor: pointer;
-  color: #1f2937;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.list .tags {
-  margin-left: 12px;
-  flex-shrink: 0;
-}
-.list .actions {
-  margin-left: auto;
-  display: flex;
-  gap: 18px;
-  font-size: 18.5px;
-  flex-shrink: 0;
-}
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
+.grid .doc-item { padding: 15px; display: flex; flex-direction: column; text-align: center; }
+.grid .title { font-size: 16px; margin-bottom: 8px; display: block; }
+.grid .actions { margin-top: auto; padding-top: 12px; display: flex; justify-content: center; gap: 20px; }
 
-/* ================== 卡片模式 ================== */
-.grid .doc-item {
-  text-align: center;
-  padding: 16px 14px;
-  min-height: 152px;
-  display: flex;
-  flex-direction: column;
-}
-.grid .title-line {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.grid .title {
-  font-weight: 600;
-  font-size: 15.8px;
-  cursor: pointer;
-  color: #1f2937;
-}
-.grid .tags {
-  margin-bottom: 12px;
-  min-height: 26px;
-}
-.grid .actions {
-  margin-top: auto;
-  display: flex;
-  justify-content: center;
-  gap: 20px;
-  font-size: 19.5px;
-}
+.category-filter { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px; }
+.category-btn { padding: 6px 12px; border-radius: 20px; font-size: 13px; background: #fff; border: 1px solid #e2e8f0; text-decoration: none; color: inherit; }
+.category-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
 
-.title:hover { color: #2563eb; }
-.pin-icon { color: #f59e0b; font-size: 18.5px; }
+/* 移动端专用适配 */
+@media (max-width: 600px) {
+  .container { padding: 12px; }
+  .header h2 { font-size: 18px; }
+  .card { padding: 15px; margin-bottom: 10px; }
+  
+  /* 登录页居中 */
+  .login-container { display: flex; align-items: center; min-height: 80vh; }
 
-.tag {
-  background: #f1f5f9;
-  color: #475569;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  white-space: nowrap;
-}
+  /* 列表模式更紧凑 */
+  .list .doc-item { padding: 10px 12px; gap: 8px; }
+  .list .title { font-size: 14px; }
+  .list .actions { gap: 10px; }
+  .list .tags { display: none; } /* 移动端列表隐藏标签以节省空间 */
 
-.actions a {
-  text-decoration: none;
-  transition: transform 0.2s;
-}
-.actions a:hover {
-  transform: scale(1.18);
-}
+  /* 卡片模式一行两个 */
+  .grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .grid .doc-item { padding: 10px; min-height: 120px; }
+  .grid .title { font-size: 14px; }
+  .grid .actions { gap: 15px; font-size: 16px; }
 
-/* 分类筛选 */
-.category-filter {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-bottom: 20px;
-}
-.category-btn {
-  padding: 7px 14px;
-  border-radius: 999px;
-  font-size: 14px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  cursor: pointer;
-  text-decoration: none;
-  color: inherit;
-}
-.category-btn.active {
-  background: #2563eb;
-  color: white;
-  border-color: #2563eb;
-}
-
-/* 移动端适配 */
-@media (max-width: 680px) {
-  .list .doc-item {
-    min-height: 52px;
-    padding: 11px 16px;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .list .actions {
-    margin-left: 0;
-    width: 100%;
-    justify-content: flex-end;
-  }
-  .grid {
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 12px;
-  }
+  /* 编辑器高度自适应 */
+  textarea { min-height: 300px; font-size: 14px; }
+  h1 { font-size: 20px; }
 }
 </style>`;
 }
@@ -340,13 +208,13 @@ textarea { min-height: 240px; line-height: 1.6; }
 function loginPage(msg="") {
   return `
 ${baseStyle()}
-<div class="container" style="max-width:420px;margin-top:140px">
-  <div class="card">
-    <h2 style="text-align:center">文档系统登录</h2>
-    ${msg ? `<p style="color:red;text-align:center">${msg}</p>` : ""}
+<div class="container login-container">
+  <div class="card" style="width:100%; max-width:320px; margin: 0 auto;">
+    <h2 style="text-align:center; margin-bottom:20px">系统登录</h2>
+    ${msg ? `<p style="color:red;text-align:center;font-size:14px">${msg}</p>` : ""}
     <form method="post">
-      <input type="password" name="password" placeholder="请输入密码">
-      <button class="btn-primary" style="width:100%;margin-top:16px">登录</button>
+      <input type="password" name="password" placeholder="密码" autofocus>
+      <button class="btn-primary" style="width:100%;margin-top:16px;padding:12px">进入</button>
     </form>
   </div>
 </div>`;
@@ -354,25 +222,22 @@ ${baseStyle()}
 
 function indexPage(docs, categories, currentCategory) {
   const allCategories = [{category: ""}, ...categories];
-
   return `
 ${baseStyle()}
 <div class="container">
   <div class="header">
-    <h2>📄 文档管理</h2>
-    <div>
-      <button class="btn-ghost" onclick="toggleLayout()">切换排列</button>
-      <button class="btn-primary" onclick="toggleNew()">➕ 新建</button>
+    <h2>📄 我的文档</h2>
+    <div style="display:flex; gap:8px">
+      <button class="btn-ghost" onclick="toggleLayout()" style="padding:8px">🖼️</button>
+      <button class="btn-primary" onclick="toggleNew()">+ 新建</button>
     </div>
   </div>
 
-  <!-- 分类筛选 -->
   <div class="category-filter">
     ${allCategories.map(c => {
       const cat = c.category || "";
-      const name = cat === "" ? "全部" : cat;
       const active = cat === currentCategory ? "active" : "";
-      return `<a href="?category=${encodeURIComponent(cat)}" class="category-btn ${active}">${name}</a>`;
+      return `<a href="?category=${encodeURIComponent(cat)}" class="category-btn ${active}">${cat || "全部"}</a>`;
     }).join("")}
   </div>
 
@@ -380,11 +245,11 @@ ${baseStyle()}
     <form method="post" action="/create">
       <input name="title" placeholder="标题" required>
       <input name="category" placeholder="分类">
-      <input name="tags" placeholder="标签（逗号分隔）">
-      <textarea name="content" placeholder="Markdown 内容"></textarea>
-      <div style="margin-top:14px">
-        <button class="btn-primary">保存文档</button>
-        <button type="button" class="btn-ghost" onclick="toggleNew()">取消</button>
+      <input name="tags" placeholder="标签(逗号分隔)">
+      <textarea name="content" placeholder="正文 (支持 Markdown)"></textarea>
+      <div style="margin-top:14px; display:flex; gap:10px">
+        <button class="btn-primary" style="flex:1">保存</button>
+        <button type="button" class="btn-ghost" onclick="toggleNew()" style="flex:1">取消</button>
       </div>
     </form>
   </div>
@@ -393,40 +258,30 @@ ${baseStyle()}
     ${docs.map(d => `
       <div class="doc-item">
         <div class="title-line">
-          ${d.pinned === 1 ? `<span class="pin-icon">📌</span>` : ''}
-          <span class="title" onclick="location.href='/view?id=${d.id}'">${escape(d.title)}</span>
+          ${d.pinned === 1 ? `<span style="color:#f59e0b">📌</span>` : ''}
+          <a class="title" href="/view?id=${d.id}">${escape(d.title)}</a>
+          <div class="tags">
+            ${(d.tags||"").split(",").filter(Boolean).slice(0,2).map(t => `<span class="tag">${escape(t.trim())}</span>`).join("")}
+          </div>
         </div>
-
-        <div class="tags">
-          ${(d.tags||"").split(",").filter(Boolean).map(t => 
-            `<span class="tag">${escape(t.trim())}</span>`
-          ).join(" ")}
-        </div>
-
         <div class="actions">
-          <a href="/pin?id=${d.id}" title="${d.pinned === 1 ? '取消置顶' : '置顶'}">
-            ${d.pinned === 1 ? '⭐' : '☆'}
-          </a>
-          <a href="/edit?id=${d.id}" title="编辑">✏️</a>
-          <a href="/delete?id=${d.id}" onclick="return confirm('确认删除此文档？')" title="删除">🗑️</a>
+          <a href="/pin?id=${d.id}">${d.pinned === 1 ? '⭐' : '☆'}</a>
+          <a href="/edit?id=${d.id}">✏️</a>
+          <a href="/delete?id=${d.id}" onclick="return confirm('确定删除？')">🗑️</a>
         </div>
       </div>
     `).join("")}
   </div>
 </div>
-
 <script>
-let grid = false;
-
+let isGrid = false;
 function toggleNew() {
   const b = document.getElementById('newBox');
   b.style.display = b.style.display === 'none' ? 'block' : 'none';
 }
-
 function toggleLayout() {
-  grid = !grid;
-  const l = document.getElementById('docList');
-  l.className = grid ? 'grid' : 'list';
+  isGrid = !isGrid;
+  document.getElementById('docList').className = isGrid ? 'grid' : 'list';
 }
 </script>`;
 }
@@ -436,10 +291,14 @@ function viewPage(d) {
 ${baseStyle()}
 <div class="container">
   <div class="card">
-    <h1>${escape(d.title)}</h1>
-    ${d.category ? `<p style="color:#666;margin:8px 0">分类：${escape(d.category)}</p>` : ''}
-    <div style="margin:20px 0; line-height:1.7">${md(escape(d.content))}</div>
-    <a href="/" style="color:#2563eb;font-size:15px">← 返回文档列表</a>
+    <h1 style="margin-top:0; font-size:1.5rem;">${escape(d.title)}</h1>
+    <div style="font-size:13px; color:#666; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
+      ${d.category ? `分类: ${escape(d.category)}` : '未分类'} 
+    </div>
+    <div class="view-content">${md(escape(d.content))}</div>
+    <div style="margin-top:30px; border-top:1px solid #eee; padding-top:15px">
+      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:500;">← 返回列表</a>
+    </div>
   </div>
 </div>`;
 }
@@ -449,15 +308,15 @@ function editPage(d) {
 ${baseStyle()}
 <div class="container">
   <div class="card">
-    <h2>编辑文档</h2>
+    <h3 style="margin-top:0">编辑文档</h3>
     <form method="post">
-      <input name="title" value="${escape(d.title)}" required>
-      <input name="category" value="${escape(d.category || '')}">
-      <input name="tags" value="${escape(d.tags || '')}">
+      <input name="title" value="${escape(d.title)}" required placeholder="标题">
+      <input name="category" value="${escape(d.category || '')}" placeholder="分类">
+      <input name="tags" value="${escape(d.tags || '')}" placeholder="标签">
       <textarea name="content">${escape(d.content)}</textarea>
-      <div style="margin-top:16px">
-        <button class="btn-primary">保存修改</button>
-        <a href="/" style="margin-left:16px;color:#2563eb">取消</a>
+      <div style="margin-top:16px; display:flex; gap:12px">
+        <button class="btn-primary" style="flex:1; padding:12px">提交更新</button>
+        <button type="button" class="btn-ghost" onclick="location.href='/'" style="flex:1">取消</button>
       </div>
     </form>
   </div>
