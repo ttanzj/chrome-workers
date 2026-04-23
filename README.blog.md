@@ -1,4 +1,4 @@
-[workers1-3](README.md)  | [workers-domain](README.domain.md) | workers-blog | [workers-blog](README.tuku.md)
+[workers1-3](README.md)  | [workers-domain](README.domain.md) | workers-blog | [workers-tuku](README.tuku.md)
 
 
 ## 本workers由AI创建的用D1数据库做存储的一个简易文档管理系统，主要为自己保存一些想法和技术资料，写法采用markdown，适配桌面和移动端。以下是该文档系统在 Cloudflare 上的完整部署指南、配置说明以及 Markdown 语法详细手册。
