@@ -198,7 +198,7 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
     const isExpired = today > expDate;
 
     return `<tr data-index="${index}" data-domain="${info.domain || ''}" draggable="true">
-      <td class="drag-handle" data-label="排序" style="display:none; width:40px; text-align:center;">
+      <td class="drag-handle" data-label="排序" style="display:none; text-align:center;">
         <span style="cursor: grab; font-size: 22px; color: #64748b;">≡</span>
       </td>
       <td data-label="状态" style="text-align:center;">
@@ -251,7 +251,8 @@ function generateHTML(domainsData, SITENAME, hasPassword) {
       td::before { content: attr(data-label); position: absolute; left: 15px; width: 35%; font-weight: 600; color: #64748b; font-size: 13px; }
       .domain-cell { background: #f8faff; border-radius: 10px 10px 0 0; }
       .edit-icons { top: 10px; right: 15px; }
-      .drag-handle { background: #f1f5f9; padding-left: 15px !important; border-radius: 10px 10px 0 0; }
+      .drag-handle { background: #f1f5f9; padding-left: 40% !important; border-radius: 10px 10px 0 0; }
+      .drag-handle::before { content: attr(data-label); position: absolute; left: 15px; width: 35%; font-weight: 600; color: #64748b; font-size: 13px; }
       .add-row td { padding-left: 0 !important; }
       .add-row td::before { content: ""; }
     }
