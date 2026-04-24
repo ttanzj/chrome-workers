@@ -119,45 +119,32 @@ export default {
   },
 };
 
-/* ================= 表格解析状态机 ================= */
+/* ================= 增强型表格解析 ================= */
 function parseTables(text) {
   const lines = text.split('\n');
   let result = [];
   let i = 0;
 
   while (i < lines.length) {
-    if (lines[i].includes('|')) {
+    if (lines[i].includes('|') && i + 1 < lines.length && /^[-\s|:|&amp;]+$/.test(lines[i+1].trim()) && lines[i+1].includes('-')) {
       let tableLines = [];
       while (i < lines.length && lines[i].includes('|')) {
         tableLines.push(lines[i]);
         i++;
       }
 
-      let hasSeparator = tableLines.length >= 2 && /^[-\s|:|&amp;]+$/.test(tableLines[1].trim());
-      let html = `<table style="border-collapse:collapse;width:100%;margin:10px 0;background:#fff;">`;
-
-      if (hasSeparator) {
-        html += `<thead><tr>`;
-        tableLines[0].split('|').filter(c => c.trim()).forEach(c => {
-          html += `<th style="border:1px solid #ddd;padding:8px 12px;background:#f8fafc;text-align:left;">${c.trim()}</th>`;
+      let html = `<table style="border-collapse:collapse;width:100%;margin:12px 0;background:#fff;display:table;">`;
+      html += `<thead><tr>`;
+      tableLines[0].split('|').filter(c => c.trim()).forEach(c => {
+        html += `<th style="border:1px solid #ddd;padding:8px 12px;background:#f8fafc;text-align:left;">${c.trim()}</th>`;
+      });
+      html += `</tr></thead><tbody>`;
+      for (let j = 2; j < tableLines.length; j++) {
+        html += `<tr>`;
+        tableLines[j].split('|').filter(c => c.trim()).forEach(c => {
+          html += `<td style="border:1px solid #ddd;padding:8px 12px;">${c.trim()}</td>`;
         });
-        html += `</tr></thead><tbody>`;
-        for (let j = 2; j < tableLines.length; j++) {
-          html += `<tr>`;
-          tableLines[j].split('|').filter(c => c.trim()).forEach(c => {
-            html += `<td style="border:1px solid #ddd;padding:8px 12px;">${c.trim()}</td>`;
-          });
-          html += `</tr>`;
-        }
-      } else {
-        html += `<tbody>`;
-        tableLines.forEach(line => {
-          html += `<tr>`;
-          line.split('|').filter(c => c.trim()).forEach(c => {
-            html += `<td style="border:1px solid #ddd;padding:8px 12px;">${c.trim()}</td>`;
-          });
-          html += `</tr>`;
-        });
+        html += `</tr>`;
       }
       html += `</tbody></table>`;
       result.push(html);
@@ -171,36 +158,46 @@ function parseTables(text) {
 
 /* ================= Markdown 核心解析 ================= */
 function md(t) {
-  // 1. 先进行表格解析
-  let content = parseTables(t);
+  // 3. 转义符处理
+  let content = t.replace(/\\([*#_>`[\]()!|~-])/g, '%%ESC_$1%%');
 
-  // 2. 缩进正则：处理 &emsp 缩进
-  content = content.replace(/&amp;emsp/g, '&emsp;&emsp;');
+  // 1. 表格解析
+  content = parseTables(content);
 
-  // 3. 代码块
+  // 2. 代码块
   content = content.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
 
   // 4. 其他正则替换
   content = content
-    .replace(/^###### (.*$)/gm, '<h6>$1</h6>')
-    .replace(/^##### (.*$)/gm, '<h5>$1</h5>')
-    .replace(/^#### (.*$)/gm, '<h4>$1</h4>')
-    .replace(/^### (.*$)/gm, '<h3>$1</h3>')
-    .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-    .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-    .replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>')
+    // 2. 横线
+    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:16px 0;display:block;">')
+    // 6. 缩小标题行间距
+    .replace(/^###### (.*$)/gm, '<h6 style="margin:8px 0 4px 0;display:block;">$1</h6>')
+    .replace(/^##### (.*$)/gm, '<h5 style="margin:8px 0 4px 0;display:block;">$1</h5>')
+    .replace(/^#### (.*$)/gm, '<h4 style="margin:8px 0 4px 0;display:block;">$1</h4>')
+    .replace(/^### (.*$)/gm, '<h3 style="margin:10px 0 4px 0;display:block;">$1</h3>')
+    .replace(/^## (.*$)/gm, '<h2 style="margin:12px 0 6px 0;display:block;">$1</h2>')
+    .replace(/^# (.*$)/gm, '<h1 style="margin:14px 0 8px 0;display:block;">$1</h1>')
+    // 4. 引用（兼容有无空格）
+    .replace(/^>[ ]?(.*$)/gm, '<blockquote style="border-left:4px solid #ddd;padding:4px 15px;color:#666;margin:8px 0;background:#f9f9f9;display:block;">$1</blockquote>')
+    // 6. 列表
+    .replace(/^\* (.*$)/gm, '<ul style="margin:4px 0;display:block;"><li>$1</li></ul>').replace(/<\/ul>\n<ul>/g, '')
+    .replace(/^- (.*$)/gm, '<ul style="margin:4px 0;display:block;"><li>$1</li></ul>').replace(/<\/ul>\n<ul>/g, '')
+    // 行内
+    .replace(/&amp;emsp/g, '&emsp;&emsp;')
     .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/~~(.*?)~~/g, '<del>$1</del>')
     .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" style="max-width:100%">')
     .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>')
-    .replace(/^\* (.*$)/gm, '<ul><li>$1</li></ul>').replace(/<\/ul>\n<ul>/g, '')
-    .replace(/^- (.*$)/gm, '<ul><li>$1</li></ul>').replace(/<\/ul>\n<ul>/g, '')
     .replace(/`(.*?)`/g, '<code>$1</code>');
 
-  // 5. 最后处理换行
-  return content.replace(/\n/g, "<br>");
+  // 5. 换行处理：最后统一转换。此时块级标签由于 display:block 会自动换行，剩余 \n 补全间距
+  content = content.replace(/\n/g, "<br>");
+
+  // 3. 还原转义
+  return content.replace(/%%ESC_(.)%%/g, '$1');
 }
 
 /* ================= 布局与样式 ================= */
@@ -210,6 +207,8 @@ function baseStyle() {
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
 body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
+/* 登录居中调整 */
+.login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
 .header h2 { margin: 0; font-size: 22px; }
@@ -219,9 +218,8 @@ button { padding: 8px 16px; font-size: 14px; border: none; border-radius: 8px; c
 input, textarea { width: 100%; padding: 12px; font-size: 16px; margin-top: 8px; border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; }
 textarea { min-height: 360px; line-height: 1.6; font-family: monospace; resize: vertical; }
 .view-content { min-height: 450px; word-wrap: break-word; }
-.view-content blockquote { border-left: 4px solid #ddd; padding-left: 15px; color: #666; margin: 10px 0; }
 .view-content pre { background: #f1f5f9; padding: 15px; border-radius: 8px; overflow-x: auto; font-family: monospace; }
-.view-content table { border-spacing: 0; }
+.view-content table { border-spacing: 0; display: table; }
 .doc-item { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; transition: all 0.2s; overflow: hidden; }
 .title { font-weight: 600; cursor: pointer; text-decoration: none; color: var(--text); }
 .tag { background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
@@ -249,8 +247,8 @@ textarea { min-height: 360px; line-height: 1.6; font-family: monospace; resize: 
 
 function loginPage(msg="") {
   return `${baseStyle()}
-<div class="container login-container">
-  <div class="card" style="width:100%; max-width:320px; margin: 0 auto;">
+<div class="login-wrapper">
+  <div class="card" style="width:100%; max-width:320px;">
     <h2 style="text-align:center; margin-bottom:20px">系统登录</h2>
     ${msg ? `<p style="color:red;text-align:center;font-size:14px">${msg}</p>` : ""}
     <form method="post">
