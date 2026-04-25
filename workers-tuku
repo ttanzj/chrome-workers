@@ -380,7 +380,7 @@ async function loadImages() {
         <div class="m-name">\${item.name}</div>
         <div class="m-btns">
           <button onclick="copyLink('\${url}')">复制</button>
-          <button style="background:#ef4444" onclick="deleteFile('\${item.path}')">删</button>
+          <button style="background:#ef4444" onclick="deleteFile('\${item.path}')">删除</button>
         </div>
       </div>\`;
     listMBox.appendChild(mCard);
