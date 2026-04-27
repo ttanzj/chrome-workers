@@ -86,7 +86,7 @@ export default {
 
     /* ================= 4. 业务 API ================= */
 
-    // 列表 API：60秒缓存
+    // 列表 API：86400秒缓存
     if (url.pathname === "/api/list") {
       const path = fixPath(url.searchParams.get("path") || "");
       const cacheKey = `list:${path}`;
@@ -104,7 +104,7 @@ export default {
         res.push({ name: i.name, path: itemPath, type: i.type, meta });
       }
       // 写入 60 秒缓存
-      await env.GALLERY_KV.put(cacheKey, JSON.stringify(res), { expirationTtl: 60 });
+      await env.GALLERY_KV.put(cacheKey, JSON.stringify(res), { expirationTtl: 86400 });
       return json(res);
     }
 
