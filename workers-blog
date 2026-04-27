@@ -1,469 +1,399 @@
 export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const method = req.method;
+    const PASSWORD = env.PASSWORD;
 
-    function isAuthed(req) {
-      const cookie = req.headers.get("cookie") || "";
-      return cookie.includes("gallery_auth=1");
-    }
-
-    function json(data, status = 200) {
-      return new Response(JSON.stringify(data), {
-        status,
-        headers: { "content-type": "application/json;charset=UTF-8" },
-      });
-    }
-
-    function html(body) {
-      return new Response(body, {
-        headers: { "content-type": "text/html;charset=UTF-8" },
-      });
-    }
-
-    /* ================= GitHub API 原始函数 ================= */
-    async function gh(path) {
-      const api = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/contents${path ? "/" + path : ""}?ref=${env.GITHUB_BRANCH}`;
-
-      const res = await fetch(api, {
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-          "User-Agent": "cf-gallery-worker",
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
+    const html = (b) =>
+      new Response(`<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">${b}</html>`, { 
+        headers: { "content-type": "text/html;charset=UTF-8" } 
       });
 
-      if (!res.ok) throw new Error("GitHub API error");
-      return res.json();
-    }
+    const redirect = (to) =>
+      new Response(null, { status: 302, headers: { Location: to } });
 
-    async function ghPut(path, rawBase64, message = "upload") {
-      const api = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/contents${path ? "/" + path : ""}`;
+    const isLogin = () =>
+      req.headers.get("cookie")?.includes("login=1");
 
-      let sha = undefined;
-      try {
-        const info = await gh(path);
-        sha = info.sha;
-      } catch (_) {}
-
-      const cleanBase64 = rawBase64.replace(/[\r\n\t\s\x00-\x1F]/g, '');
-
-      return fetch(api, {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-          "User-Agent": "cf-gallery-worker",
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-        body: JSON.stringify({
-          message,
-          content: cleanBase64,
-          encoding: "base64",
-          sha,
-        }, null, 0),
-      });
-    }
-
-    async function ghDelete(path, sha) {
-      const api = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/contents${path ? "/" + path : ""}`;
-
-      return fetch(api, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-          "User-Agent": "cf-gallery-worker",
-          Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
-        },
-        body: JSON.stringify({
-          message: "delete",
-          sha,
-        }),
-      });
-    }
-
-    /* ================= 缓存分发路由 ================= */
-    if (url.pathname.startsWith("/i/")) {
-      const imgPath = decodeURIComponent(url.pathname.substring(3));
-      
-      const isDeleted = await env.GALLERY_KV.get("del:" + imgPath);
-      if (isDeleted) return new Response("File Deleted", { status: 404 });
-
-      const cache = caches.default;
-      let response = await cache.match(request);
-
-      if (!response) {
-        const ghRawUrl = `https://raw.githubusercontent.com/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/${env.GITHUB_BRANCH}/${imgPath}`;
-        const res = await fetch(ghRawUrl);
-        
-        if (!res.ok) return res;
-
-        response = new Response(res.body, res);
-        response.headers.set("Cache-Control", "public, max-age=2592000"); 
-        ctx.waitUntil(cache.put(request, response.clone()));
-      }
-      return response;
-    }
-
-    /* ================= 登录页 ================= */
+    /* ---------- 登录 ---------- */
     if (url.pathname === "/login") {
-      return html(`<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>图库登录</title>
-<style>
-body { font-family: -apple-system, sans-serif; background: #f0f2f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-.box { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 8px 30px rgba(0,0,0,0.08); text-align: center; width: 340px; }
-h2 { color: #1f2937; margin-bottom: 24px; font-size: 22px; }
-input { padding: 14px; width: 100%; box-sizing: border-box; border-radius: 10px; border: 1px solid #ddd; margin-bottom: 20px; font-size: 16px; outline: none; }
-button { width: 100%; padding: 14px; border: none; background: #2563eb; color: white; border-radius: 10px; cursor: pointer; font-size: 16px; font-weight: 600; }
-@media (max-width: 600px) {
-  .box { width: 85%; padding: 25px 20px; }
-  h2 { font-size: 18px; margin-bottom: 15px; }
-}
-</style>
-</head>
-<body>
-<div class="box">
-  <h2>图库登录</h2>
-  <input id=p type=password placeholder="请输入访问密码">
-  <button onclick="login()">进入图库</button>
-</div>
-<script>
-async function login(){
-  const r = await fetch("/api/login",{method:"POST",body:document.getElementById("p").value});
-  if(r.ok) location="/";
-  else alert("密码错误");
-}
-</script>
-</body>
-</html>`);
-    }
-
-    if (url.pathname === "/api/login" && request.method === "POST") {
-      const pwd = await request.text();
-      if (pwd === env.GALLERY_PASSWORD) {
-        return new Response("ok", {
-          headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly" },
-        });
+      if (method === "POST") {
+        const f = await req.formData();
+        if (f.get("password") === PASSWORD) {
+          return new Response("", {
+            status: 302,
+            headers: {
+              "Set-Cookie": "login=1; Path=/; SameSite=Lax",
+              Location: "/",
+            },
+          });
+        }
+        return html(loginPage("密码错误"));
       }
-      return new Response("forbidden", { status: 403 });
+      return html(loginPage());
+    }
+    if (!isLogin()) return redirect("/login");
+
+    /* ---------- 新建 ---------- */
+    if (url.pathname === "/create" && method === "POST") {
+      const f = await req.formData();
+      const now = new Date().toISOString();
+      const result = await env.DB.prepare(
+        `INSERT INTO docs (title, category, tags, content, pinned, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?) RETURNING id`
+      ).bind(
+        f.get("title"),
+        f.get("category"),
+        f.get("tags"),
+        f.get("content"),
+        now,
+        now
+      ).first();
+      // 新建后直接进入预览
+      return redirect(`/view?id=${result.id}`);
     }
 
-    if (!isAuthed(request)) {
-      return Response.redirect(url.origin + "/login", 302);
+    /* ---------- 切换置顶 ---------- */
+    if (url.pathname === "/pin") {
+      const id = url.searchParams.get("id");
+      await env.DB.prepare(
+        `UPDATE docs 
+         SET pinned = CASE WHEN pinned = 1 THEN 0 ELSE 1 END,
+             updated_at = ?
+         WHERE id = ?`
+      ).bind(new Date().toISOString(), id).run();
+      return redirect("/");
     }
 
-    /* ================= 业务接口逻辑 ================= */
-    if (url.pathname === "/api/upload") {
-      const path = url.searchParams.get("path") || "";
-      let name = url.searchParams.get("name");
-      let base64 = await request.text();
-      base64 = base64.replace(/[\r\n\t\s\x00-\x1F]/g, '');
-      const fullPath = (path ? path + "/" : "") + name;
-      const history = await env.GALLERY_KV.get("meta:" + fullPath);
-      if (history) {
-        const dot = name.lastIndexOf(".");
-        const stem = dot !== -1 ? name.substring(0, dot) : name;
-        const ext = dot !== -1 ? name.substring(dot) : "";
-        name = stem + "_" + Date.now() + ext;
+    /* ---------- 删除 ---------- */
+    if (url.pathname === "/delete") {
+      await env.DB.prepare(`DELETE FROM docs WHERE id=?`)
+        .bind(url.searchParams.get("id")).run();
+      return redirect("/");
+    }
+
+    /* ---------- 查看 ---------- */
+    if (url.pathname === "/view") {
+      const doc = await env.DB.prepare(`SELECT * FROM docs WHERE id=?`)
+        .bind(url.searchParams.get("id")).first();
+      return html(viewPage(doc));
+    }
+
+    /* ---------- 编辑 ---------- */
+    if (url.pathname === "/edit") {
+      const id = url.searchParams.get("id");
+      if (method === "POST") {
+        const f = await req.formData();
+        await env.DB.prepare(
+          `UPDATE docs SET title=?, category=?, tags=?, content=?, updated_at=?
+           WHERE id=?`
+        ).bind(
+          f.get("title"),
+          f.get("category"),
+          f.get("tags"),
+          f.get("content"),
+          new Date().toISOString(),
+          id
+        ).run();
+        // 修改点：保存后直接重定向到预览页面
+        return redirect(`/view?id=${id}`);
       }
-      const finalPath = (path ? path + "/" : "") + name;
-      const res = await ghPut(finalPath, base64, "upload");
-      if (!res.ok) return json({ ok: 0, error: await res.text() }, 500);
-      await env.GALLERY_KV.delete("del:" + finalPath);
-      await env.GALLERY_KV.put("meta:" + finalPath, "1", { expirationTtl: 2592000 });
-      ctx.waitUntil(fetch(url.origin + "/i/" + finalPath));
-      return json({ ok: 1 });
+      const doc = await env.DB.prepare(`SELECT * FROM docs WHERE id=?`)
+        .bind(id).first();
+      return html(editPage(doc));
     }
 
-    if (url.pathname === "/api/list") {
-      const path = url.searchParams.get("path") || "";
-      const data = await gh(path);
-      const filtered = [];
-      for (const i of data) {
-        if (i.name === ".keep") continue;
-        const isDel = await env.GALLERY_KV.get("del:" + i.path);
-        if (!isDel) filtered.push({ name: i.name, path: i.path, type: i.type });
-      }
-      return json(filtered);
-    }
+    /* ---------- 首页 ---------- */
+    const categoryFilter = url.searchParams.get("category") || "";
+    const docs = await env.DB.prepare(`
+      SELECT * FROM docs 
+      WHERE (? = '' OR category = ?)
+      ORDER BY pinned DESC, updated_at DESC
+    `).bind(categoryFilter, categoryFilter).all();
 
-    if (url.pathname === "/api/mkdir") {
-      const p = await request.text();
-      await ghPut(p + "/.keep", btoa(""), "mkdir");
-      return json({ ok: 1 });
-    }
+    const categories = await env.DB.prepare(
+      `SELECT DISTINCT category FROM docs 
+       WHERE category IS NOT NULL AND category != '' 
+       ORDER BY category`
+    ).all();
 
-    if (url.pathname === "/api/delete") {
-      const p = await request.text();
-      try {
-        const info = await gh(p);
-        await ghDelete(p, info.sha);
-      } catch (e) {}
-      await env.GALLERY_KV.put("del:" + p, "1", { expirationTtl: 2592000 });
-      return json({ ok: 1 });
-    }
-
-    /* ================= 前端主页 ================= */
-    if (url.pathname === "/") {
-      return html(`<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>图库管理</title>
-<style>
-body { font-family: -apple-system, sans-serif; background: #f5f7fb; margin: 0; overflow: hidden; }
-button { cursor: pointer; border: none; background: #2563eb; color: white; border-radius: 6px; font-weight: 500; }
-
-/* 桌面端 */
-#desktop-ui { display: block; }
-#desktop-ui header { background: #1f2937; color: #fff; padding: 14px; text-align: center; font-size: 18px; font-weight: 600; }
-#desktop-ui main { max-width: 1200px; margin: 10px auto; background: #fff; padding: 16px; border-radius: 10px; height: calc(100vh - 80px); overflow-y: auto; box-sizing: border-box; }
-#desktop-ui .toolbar { text-align: center; margin-bottom: 12px; }
-#desktop-ui .toolbar button { padding: 8px 14px; margin: 4px; font-size: 14px; }
-#desktop-ui #dirs { text-align: center; margin-bottom: 15px; }
-#desktop-ui #dirs span { margin: 4px; padding: 6px 14px; background: #e5e7eb; border-radius: 8px; cursor: pointer; display: inline-block; font-size: 14px; color: #4b5563; }
-#desktop-ui #dirs span.active { background: #2563eb; color: white; }
-#desktop-ui #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(75px, 1fr)); gap: 10px; margin-top: 20px; }
-
-/* 手机端 */
-#mobile-ui { display: none; }
-@media (max-width: 600px) {
-  #desktop-ui { display: none !important; }
-  #mobile-ui { display: block !important; }
-  #mobile-ui header { background: #1f2937; color: #fff; padding: 12px; text-align: center; font-size: 16px; font-weight: 600; }
-  #mobile-ui main { width: 100%; margin: 0; background: #fff; padding: 10px 5px; height: calc(100vh - 44px); overflow-y: auto; box-sizing: border-box; }
-  #mobile-ui .toolbar { display: flex; justify-content: space-around; margin-bottom: 10px; padding: 0 4px; }
-  #mobile-ui .toolbar button { padding: 8px 12px; font-size: 13px; flex: 1; margin: 0 3px; }
-  #mobile-ui #dirs-m { display: flex; overflow-x: auto; padding: 5px 2px; margin-bottom: 10px; gap: 6px; border-bottom: 1px solid #eee; }
-  #mobile-ui #dirs-m span { white-space: nowrap; padding: 5px 12px; background: #e5e7eb; border-radius: 6px; font-size: 13px; color: #4b5563; }
-  #mobile-ui #dirs-m span.active { background: #2563eb; color: white; }
-  #mobile-ui #list-m { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
-  
-  .m-card { border: 1px solid #f0f0f0; border-radius: 3px; overflow: hidden; display: flex; flex-direction: column; background: #fff; }
-  .m-img-box { width: 100%; aspect-ratio: 1/1; overflow: hidden; }
-  .m-img-box img { width: 100%; height: 100%; object-fit: cover; }
-  .m-info { padding: 3px 1px; text-align: center; }
-  .m-name { font-size: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; color: #374151; }
-  .m-btns { display: flex; flex-direction: column; gap: 2px; }
-  .m-btns button { width: 100%; padding: 3px 0; font-size: 8px; border-radius: 2px; }
-}
-
-/* 共有样式 */
-.img-card, .m-card { border: 1px solid #f0f0f0; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; background: #fff; }
-.img-box, .m-img-box { width: 100%; aspect-ratio: 1/1; overflow: hidden; cursor: zoom-in; background: #f9f9f9; }
-.img-box img, .m-img-box img { width: 100%; height: 100%; object-fit: cover; }
-.img-info, .m-info { padding: 5px; text-align: center; }
-.img-name, .m-name { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; color: #374151; }
-.img-btns, .m-btns { display: flex; flex-direction: column; gap: 3px; }
-.img-btns button, .m-btns button { padding: 4px 0; font-size: 10px; }
-
-#modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; justify-content: center; align-items: center; }
-#modal img { max-width: 95%; max-height: 95%; object-fit: contain; }
-</style>
-</head>
-<body>
-
-<div id="desktop-ui">
-  <header>图库管理</header>
-  <main>
-    <div class="toolbar">
-      <button id="sortBtn" onclick="toggleSort()">排序: 时间↓</button>
-      <button onclick="mkdir()">新建目录</button>
-      <button onclick="upload()">上传图片</button>
-    </div>
-    <div id="dirs"></div>
-    <div id="list"></div>
-  </main>
-</div>
-
-<div id="mobile-ui">
-  <header>图库管理</header>
-  <main>
-    <div class="toolbar">
-      <button id="sortBtnM" onclick="toggleSort()">排序: 时间↓</button>
-      <button onclick="mkdir()">新建</button>
-      <button onclick="upload()">上传</button>
-    </div>
-    <div id="dirs-m"></div>
-    <div id="list-m"></div>
-  </main>
-</div>
-
-<div id="modal" onclick="this.style.display='none'"><img id="modalImg" src=""></div>
-
-<script>
-function bufferToBase64(buffer) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-    reader.readAsDataURL(new Blob([buffer]));
-  });
-}
-
-function getCDN(path) {
-  return window.location.origin + "/i/" + path;
-}
-
-let cur = "";
-let sortMode = "time"; // "time" 或 "name"
-
-async function loadDirs() {
-  const res = await fetch("/api/list?path=");
-  const data = await res.json();
-  const dirs = data.filter(i => i.type === "dir");
-  
-  const dirsBox = document.getElementById("dirs");
-  const dirsMBox = document.getElementById("dirs-m");
-  dirsBox.innerHTML = "";
-  dirsMBox.innerHTML = "";
-
-  dirs.forEach(dir => {
-    const span = document.createElement("span");
-    span.textContent = dir.name;
-    if (cur === dir.path) span.classList.add("active");
-    span.onclick = () => { cur = dir.path; loadDirs(); loadImages(); };
-    dirsBox.appendChild(span);
-
-    const spanM = document.createElement("span");
-    spanM.textContent = dir.name;
-    if (cur === dir.path) spanM.classList.add("active");
-    spanM.onclick = () => { cur = dir.path; loadDirs(); loadImages(); };
-    dirsMBox.appendChild(spanM);
-  });
-}
-
-async function loadImages() {
-  const res = await fetch("/api/list?path=" + encodeURIComponent(cur));
-  let files = (await res.json()).filter(item => item.type === "file");
-
-  // 排序逻辑
-  if (sortMode === "time") {
-    files.sort((a, b) => {
-      const matchA = a.name.match(/_(\\d{13,})\\./);
-      const matchB = b.name.match(/_(\\d{13,})\\./);
-      const timeA = matchA ? parseInt(matchA[1]) : 0;
-      const timeB = matchB ? parseInt(matchB[1]) : 0;
-      
-      if (timeA && timeB) return timeB - timeA;
-      if (timeA) return -1;
-      if (timeB) return 1;
-      return b.name.localeCompare(a.name);
-    });
-  } else {
-    files.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  const listBox = document.getElementById("list");
-  const listMBox = document.getElementById("list-m");
-  listBox.innerHTML = "";
-  listMBox.innerHTML = "";
-
-  files.forEach(item => {
-    const url = getCDN(item.path);
-    
-    // 桌面端
-    const dCard = document.createElement("div");
-    dCard.className = "img-card";
-    dCard.innerHTML = \`
-      <div class="img-box" onclick="showFull('\${url}')">
-        <img src="\${url}" loading="lazy">
-      </div>
-      <div class="img-info">
-        <div class="img-name">\${item.name}</div>
-        <div class="img-btns">
-          <button onclick="copyLink('\${url}')">复制</button>
-          <button style="background:#ef4444" onclick="deleteFile('\${item.path}')">删除</button>
-        </div>
-      </div>\`;
-    listBox.appendChild(dCard);
-
-    // 移动端
-    const mCard = document.createElement("div");
-    mCard.className = "m-card";
-    mCard.innerHTML = \`
-      <div class="m-img-box" onclick="showFull('\${url}')">
-        <img src="\${url}" loading="lazy">
-      </div>
-      <div class="m-info">
-        <div class="m-name">\${item.name}</div>
-        <div class="m-btns">
-          <button onclick="copyLink('\${url}')">复制</button>
-          <button style="background:#ef4444" onclick="deleteFile('\${item.path}')">删除</button>
-        </div>
-      </div>\`;
-    listMBox.appendChild(mCard);
-  });
-}
-
-function toggleSort() {
-  sortMode = sortMode === "time" ? "name" : "time";
-  const text = sortMode === "time" ? "排序: 时间↓" : "排序: 字母";
-  
-  document.getElementById("sortBtn").textContent = text;
-  if (document.getElementById("sortBtnM")) {
-    document.getElementById("sortBtnM").textContent = text;
-  }
-  
-  loadImages();
-}
-
-function showFull(url) {
-  document.getElementById("modalImg").src = url;
-  document.getElementById("modal").style.display = "flex";
-}
-
-function copyLink(url) {
-  navigator.clipboard.writeText(url);
-  alert("已复制链接");
-}
-
-async function deleteFile(path) {
-  if (confirm("确定删除？")) {
-    await fetch("/api/delete", { method: "POST", body: path });
-    loadImages();
-  }
-}
-
-async function mkdir() {
-  const name = prompt("目录名");
-  if (!name) return;
-  await fetch("/api/mkdir", { method: "POST", body: name });
-  loadDirs();
-}
-
-async function upload() {
-  if (!cur) return alert("请先选择目录");
-  const input = document.createElement("input");
-  input.type = "file";
-  input.multiple = true;
-  input.onchange = async () => {
-    const files = Array.from(input.files);
-    for (const file of files) {
-      const buf = await file.arrayBuffer();
-      const base64 = await bufferToBase64(buf);
-      await fetch("/api/upload?path=" + encodeURIComponent(cur) + "&name=" + encodeURIComponent(file.name), {
-        method: "POST",
-        body: base64
-      });
-    }
-    loadImages();
-  };
-  input.click();
-}
-
-// 初始化
-loadDirs().then(() => loadImages());
-</script>
-</body>
-</html>`);
-    }
-
-    return new Response("Not Found", { status: 404 });
-  }
+    return html(indexPage(docs.results, categories.results, categoryFilter));
+  },
 };
+
+/* ================= 增强型表格解析 (完整还原) ================= */
+function parseTables(text) {
+  const lines = text.split('\n');
+  let result = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    if (lines[i].includes('|') && i + 1 < lines.length && /^[-\s|:|&amp;]+$/.test(lines[i+1].trim()) && lines[i+1].includes('-')) {
+      let tableLines = [];
+      while (i < lines.length && lines[i].includes('|')) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+
+      let html = `<table style="border-collapse:collapse;width:100%;margin:12px 0;background:#fff;display:table;">`;
+      html += `<thead><tr>`;
+      tableLines[0].split('|').filter(c => c.trim()).forEach(c => {
+        html += `<th style="border:1px solid #ddd;padding:8px 12px;background:#f8fafc;text-align:left;">${c.trim()}</th>`;
+      });
+      html += `</tr></thead><tbody>`;
+      for (let j = 2; j < tableLines.length; j++) {
+        html += `<tr>`;
+        tableLines[j].split('|').filter(c => c.trim()).forEach(c => {
+          html += `<td style="border:1px solid #ddd;padding:8px 12px;">${c.trim()}</td>`;
+        });
+        html += `</tr>`;
+      }
+      html += `</tbody></table>`;
+      result.push(html);
+    } else {
+      result.push(lines[i]);
+      i++;
+    }
+  }
+  return result.join('\n');
+}
+
+/* ================= Markdown 核心解析 (完整还原) ================= */
+function md(t) {
+  let content = t.replace(/\\([*#_>`[\]()!|~-])/g, '%%ESC_$1%%');
+
+  content = parseTables(content);
+  content = content.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+
+  content = content
+    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:16px 0;display:block;">')
+    .replace(/^###### (.*$)/gm, '<h6 style="margin:3px 0 2px 0;display:block;">$1</h6>')
+    .replace(/^##### (.*$)/gm, '<h5 style="margin:4px 0 2px 0;display:block;">$1</h5>')
+    .replace(/^#### (.*$)/gm, '<h4 style="margin:6px 0 3px 0;display:block;">$1</h4>')
+    .replace(/^### (.*$)/gm, '<h3 style="margin:8px 0 4px 0;display:block;">$1</h3>')
+    .replace(/^## (.*$)/gm, '<h2 style="margin:10px 0 5px 0;display:block;">$1</h2>')
+    .replace(/^# (.*$)/gm, '<h1 style="margin:12px 0 7px 0;display:block;">$1</h1>')
+    .replace(/^>[ ]?(.*$)/gm, '<blockquote style="border-left:4px solid #ddd;padding:4px 15px;color:#666;margin:8px 0;background:#f9f9f9;display:block;">$1</blockquote>')
+    .replace(/^\* (.*$)/gm, '<ul style="margin:4px 0;display:block;"><li style="margin:1px 0;">$1</li></ul>')
+    .replace(/^- (.*$)/gm, '<ul style="margin:4px 0;display:block;"><li style="margin:1px 0;">$1</li></ul>')
+    .replace(/<\/ul>\n<ul>/g, '')
+    .replace(/&amp;emsp/g, '&emsp;&emsp;')
+    .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/~~(.*?)~~/g, '<del>$1</del>')
+    .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" style="max-width:100%">')
+    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>')
+    .replace(/`(.*?)`/g, '<code>$1</code>');
+
+  content = content.replace(/\n/g, "<br>");
+
+  return content.replace(/%%ESC_(.)%%/g, '$1');
+}
+
+/* ================= 布局与样式 (完整还原) ================= */
+function baseStyle() {
+  return `
+<style>
+:root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
+body { 
+  margin: 0; 
+  font-family: -apple-system, system-ui, sans-serif; 
+  background: var(--bg); 
+  color: var(--text); 
+  -webkit-font-smoothing: antialiased; 
+  line-height: 1.6; 
+}
+.container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
+
+.view-content { 
+  min-height: 450px; 
+  word-wrap: break-word; 
+  line-height: 1.45; 
+  font-size: 15.5px;
+}
+.view-content p, 
+.view-content div, 
+.view-content li { 
+  margin: 0.25em 0; 
+}
+.view-content h1, .view-content h2, .view-content h3, 
+.view-content h4, .view-content h5, .view-content h6 {
+  margin-top: 0.9em;
+  margin-bottom: 0.35em;
+}
+
+.view-content blockquote { 
+  margin: 8px 0; 
+}
+.view-content pre { 
+  background: #f1f5f9; 
+  padding: 14px; 
+  border-radius: 8px; 
+  overflow-x: auto; 
+  font-family: monospace; 
+  margin: 10px 0;
+  line-height: 1.5;
+}
+.view-content table { 
+  border-spacing: 0; 
+  display: table; 
+  margin: 12px 0;
+}
+.view-content ul, .view-content ol {
+  margin: 4px 0 4px 20px;
+  padding: 0;
+}
+
+.login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
+.card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+.header h2 { margin: 0; font-size: 22px; }
+button { padding: 8px 16px; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-ghost { background: #e5e7eb; color: #333; }
+input, textarea { width: 100%; padding: 12px; font-size: 16px; margin-top: 8px; border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; }
+textarea { min-height: 360px; line-height: 1.6; font-family: monospace; resize: vertical; }
+
+.doc-item { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; transition: all 0.2s; overflow: hidden; }
+.title { font-weight: 600; cursor: pointer; text-decoration: none; color: var(--text); }
+.tag { background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
+.actions a { text-decoration: none; font-size: 18px; }
+.list { display: flex; flex-direction: column; gap: 8px; }
+.list .doc-item { display: flex; align-items: center; padding: 10px 16px; gap: 12px; }
+.list .title-line { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+.list .actions { display: flex; gap: 15px; flex-shrink: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
+.grid .doc-item { padding: 15px; display: flex; flex-direction: column; text-align: center; }
+.grid .actions { margin-top: auto; padding-top: 12px; display: flex; justify-content: center; gap: 20px; }
+.category-filter { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px; }
+.category-btn { padding: 6px 12px; border-radius: 20px; font-size: 13px; background: #fff; border: 1px solid #e2e8f0; text-decoration: none; color: inherit; }
+.category-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+@media (max-width: 600px) {
+  .container { padding: 10px; }
+  .header h2 { font-size: 18px; }
+  .grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  textarea { min-height: 300px; font-size: 14px; }
+}
+</style>`;
+}
+
+function loginPage(msg="") {
+  return `${baseStyle()}
+<div class="login-wrapper">
+  <div class="card" style="width:100%; max-width:320px;">
+    <h2 style="text-align:center; margin-bottom:20px">系统登录</h2>
+    ${msg ? `<p style="color:red;text-align:center;font-size:14px">${msg}</p>` : ""}
+    <form method="post">
+      <input type="password" name="password" placeholder="密码" autofocus>
+      <button class="btn-primary" style="width:100%;margin-top:16px;padding:12px">确认</button>
+    </form>
+  </div>
+</div>`;
+}
+
+function indexPage(docs, categories, currentCategory) {
+  const allCategories = [{category: ""}, ...categories];
+  return `${baseStyle()}
+<div class="container">
+  <div class="header">
+    <h2>📄 文档库</h2>
+    <div style="display:flex; gap:8px">
+      <button class="btn-ghost" onclick="toggleLayout()">布局</button>
+      <button class="btn-primary" onclick="toggleNew()">+ 新建</button>
+    </div>
+  </div>
+  <div class="category-filter">
+    ${allCategories.map(c => {
+      const cat = c.category || "";
+      const active = cat === currentCategory ? "active" : "";
+      return `<a href="?category=${encodeURIComponent(cat)}" class="category-btn ${active}">${cat || "全部"}</a>`;
+    }).join("")}
+  </div>
+  <div id="newBox" class="card" style="display:none">
+    <form method="post" action="/create">
+      <input name="title" placeholder="标题" required>
+      <input name="category" placeholder="分类">
+      <input name="tags" placeholder="标签">
+      <textarea name="content" placeholder="Markdown 内容..."></textarea>
+      <div style="margin-top:14px; display:flex; gap:10px">
+        <button class="btn-primary" style="flex:1">保存并预览</button>
+        <button type="button" class="btn-ghost" onclick="toggleNew()" style="flex:1">取消</button>
+      </div>
+    </form>
+  </div>
+  <div id="docList" class="list">
+    ${docs.map(d => `
+      <div class="doc-item">
+        <div class="title-line">
+          ${d.pinned === 1 ? `<span style="color:#f59e0b">📌</span>` : ''}
+          <a class="title" href="/view?id=${d.id}">${escape(d.title)}</a>
+          <div class="tags">
+            ${(d.tags||"").split(",").filter(Boolean).slice(0,2).map(t => `<span class="tag">${escape(t.trim())}</span>`).join("")}
+          </div>
+        </div>
+        <div class="actions">
+          <a href="/pin?id=${d.id}">${d.pinned === 1 ? '⭐' : '☆'}</a>
+          <a href="/edit?id=${d.id}">✏️</a>
+          <a href="/delete?id=${d.id}" onclick="return confirm('确定删除？')">🗑️</a>
+        </div>
+      </div>
+    `).join("")}
+  </div>
+</div>
+<script>
+let isGrid = false;
+function toggleNew() {
+  const b = document.getElementById('newBox');
+  b.style.display = b.style.display === 'none' ? 'block' : 'none';
+}
+function toggleLayout() {
+  isGrid = !isGrid;
+  document.getElementById('docList').className = isGrid ? 'grid' : 'list';
+}
+</script>`;
+}
+
+function viewPage(d) {
+  return `${baseStyle()}
+<div class="container">
+  <div class="card">
+    <h1 style="margin:0 0 10px 0; font-size:1.6rem;">${escape(d.title)}</h1>
+    <div style="font-size:13px; color:#666; margin-bottom:20px; border-bottom:1px solid #eee; padding-bottom:10px;">
+      ${d.category ? `分类: ${escape(d.category)}` : '未分类'}
+    </div>
+    <div class="view-content">${md(escape(d.content))}</div>
+    <div style="margin-top:30px; border-top:1px solid #eee; padding-top:15px; display:flex; gap:15px; align-items:center;">
+      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:500;">← 返回首页</a>
+      <a href="/edit?id=${d.id}" style="color:var(--primary); text-decoration:none; font-weight:500;">✏️ 编辑文档</a>
+    </div>
+  </div>
+</div>`;
+}
+
+function editPage(d) {
+  return `${baseStyle()}
+<div class="container">
+  <div class="card">
+    <h3 style="margin-top:0">编辑</h3>
+    <form method="post">
+      <input name="title" value="${escape(d.title)}" required>
+      <input name="category" value="${escape(d.category || '')}">
+      <input name="tags" value="${escape(d.tags || '')}">
+      <textarea name="content">${escape(d.content)}</textarea>
+      <div style="margin-top:16px; display:flex; gap:12px">
+        <button class="btn-primary" style="flex:2; padding:12px">保存并预览</button>
+        <button type="button" class="btn-ghost" onclick="history.back()" style="flex:1">取消并返回</button>
+      </div>
+    </form>
+  </div>
+</div>`;
+}
+
+function escape(s = "") {
+  return s.replace(/[&<>"']/g, m => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[m]));
+}
