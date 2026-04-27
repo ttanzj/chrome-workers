@@ -20,7 +20,7 @@ export default {
       });
     }
 
-    /* ================= GitHub API 原始函数 (严禁修改逻辑量级) ================= */
+    /* ================= GitHub API 函数 ================= */
     async function gh(path) {
       const api = `https://api.github.com/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/contents${path ? "/" + path : ""}?ref=${env.GITHUB_BRANCH}`;
 
@@ -83,12 +83,15 @@ export default {
       });
     }
 
-    /* ================= 缓存分发路由 ================= */
+    /* ================= 图片访问路由（优先检查删除标记） ================= */
     if (url.pathname.startsWith("/i/")) {
       const imgPath = decodeURIComponent(url.pathname.substring(3));
-      
+
+      // 优先检查 KV 删除标记，快速拒绝已删除文件
       const isDeleted = await env.GALLERY_KV.get("del:" + imgPath);
-      if (isDeleted) return new Response("File Deleted", { status: 404 });
+      if (isDeleted) {
+        return new Response("File Deleted", { status: 404 });
+      }
 
       const cache = caches.default;
       let response = await cache.match(request);
@@ -96,11 +99,17 @@ export default {
       if (!response) {
         const ghRawUrl = `https://raw.githubusercontent.com/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/${env.GITHUB_BRANCH}/${imgPath}`;
         const res = await fetch(ghRawUrl);
-        
-        if (!res.ok) return res;
+
+        if (!res.ok) {
+          // GitHub 返回 404 时也标记删除，避免反复请求
+          if (res.status === 404) {
+            await env.GALLERY_KV.put("del:" + imgPath, "1", { expirationTtl: 2592000 });
+          }
+          return res;
+        }
 
         response = new Response(res.body, res);
-        response.headers.set("Cache-Control", "public, max-age=2592000"); 
+        response.headers.set("Cache-Control", "public, max-age=2592000");
         ctx.waitUntil(cache.put(request, response.clone()));
       }
       return response;
@@ -157,26 +166,30 @@ async function login(){
       return Response.redirect(url.origin + "/login", 302);
     }
 
-    /* ================= 业务接口逻辑 ================= */
+    /* ================= 业务接口 ================= */
     if (url.pathname === "/api/upload") {
       const path = url.searchParams.get("path") || "";
       let name = url.searchParams.get("name");
       let base64 = await request.text();
       base64 = base64.replace(/[\r\n\t\s\x00-\x1F]/g, '');
-      const fullPath = (path ? path + "/" : "") + name;
-      const history = await env.GALLERY_KV.get("meta:" + fullPath);
-      if (history) {
-        const dot = name.lastIndexOf(".");
-        const stem = dot !== -1 ? name.substring(0, dot) : name;
-        const ext = dot !== -1 ? name.substring(dot) : "";
-        name = stem + "_" + Date.now() + ext;
-      }
+
+      // 强制添加时间戳，保证新上传图片按时间排序永远在最前面
+      const dotIndex = name.lastIndexOf(".");
+      const stem = dotIndex !== -1 ? name.substring(0, dotIndex) : name;
+      const ext = dotIndex !== -1 ? name.substring(dotIndex) : "";
+      const timestamp = Date.now();
+      name = `${stem}_${timestamp}${ext}`;
+
       const finalPath = (path ? path + "/" : "") + name;
+
       const res = await ghPut(finalPath, base64, "upload");
       if (!res.ok) return json({ ok: 0, error: await res.text() }, 500);
+
       await env.GALLERY_KV.delete("del:" + finalPath);
       await env.GALLERY_KV.put("meta:" + finalPath, "1", { expirationTtl: 2592000 });
-      ctx.waitUntil(fetch(url.origin + "/i/" + finalPath));
+
+      ctx.waitUntil(fetch(url.origin + "/i/" + encodeURIComponent(finalPath)));
+
       return json({ ok: 1 });
     }
 
@@ -200,15 +213,25 @@ async function login(){
 
     if (url.pathname === "/api/delete") {
       const p = await request.text();
+
+      // 1. 从 GitHub 删除文件
       try {
         const info = await gh(p);
         await ghDelete(p, info.sha);
       } catch (e) {}
+
+      // 2. 主动清除当前 data center 的缓存（只删这张图片）
+      const cache = caches.default;
+      const cacheUrl = new URL("/i/" + encodeURIComponent(p), url.origin);
+      await cache.delete(new Request(cacheUrl));
+
+      // 3. 写入 KV 删除标记（全局保护）
       await env.GALLERY_KV.put("del:" + p, "1", { expirationTtl: 2592000 });
+
       return json({ ok: 1 });
     }
 
-    /* ================= 前端主页 (双布局体系) ================= */
+    /* ================= 前端主页 ================= */
     if (url.pathname === "/") {
       return html(`<!DOCTYPE html>
 <html lang="zh-CN">
@@ -220,7 +243,7 @@ async function login(){
 body { font-family: -apple-system, sans-serif; background: #f5f7fb; margin: 0; overflow: hidden; }
 button { cursor: pointer; border: none; background: #2563eb; color: white; border-radius: 6px; font-weight: 500; }
 
-/* --- 桌面端布局 --- */
+/* 桌面端 */
 #desktop-ui { display: block; }
 #desktop-ui header { background: #1f2937; color: #fff; padding: 14px; text-align: center; font-size: 18px; font-weight: 600; }
 #desktop-ui main { max-width: 1200px; margin: 10px auto; background: #fff; padding: 16px; border-radius: 10px; height: calc(100vh - 80px); overflow-y: auto; box-sizing: border-box; }
@@ -229,11 +252,9 @@ button { cursor: pointer; border: none; background: #2563eb; color: white; borde
 #desktop-ui #dirs { text-align: center; margin-bottom: 15px; }
 #desktop-ui #dirs span { margin: 4px; padding: 6px 14px; background: #e5e7eb; border-radius: 8px; cursor: pointer; display: inline-block; font-size: 14px; color: #4b5563; }
 #desktop-ui #dirs span.active { background: #2563eb; color: white; }
-
-/* 桌面端：预览图减小一半 (从150px降至75px) */
 #desktop-ui #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(75px, 1fr)); gap: 10px; margin-top: 20px; }
 
-/* --- 手机端布局 --- */
+/* 手机端 */
 #mobile-ui { display: none; }
 @media (max-width: 600px) {
   #desktop-ui { display: none !important; }
@@ -245,8 +266,6 @@ button { cursor: pointer; border: none; background: #2563eb; color: white; borde
   #mobile-ui #dirs-m { display: flex; overflow-x: auto; padding: 5px 2px; margin-bottom: 10px; gap: 6px; border-bottom: 1px solid #eee; }
   #mobile-ui #dirs-m span { white-space: nowrap; padding: 5px 12px; background: #e5e7eb; border-radius: 6px; font-size: 13px; color: #4b5563; }
   #mobile-ui #dirs-m span.active { background: #2563eb; color: white; }
-  
-  /* 手机端：预览图强制一行 5 个 */
   #mobile-ui #list-m { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
   
   .m-card { border: 1px solid #f0f0f0; border-radius: 3px; overflow: hidden; display: flex; flex-direction: column; background: #fff; }
@@ -258,16 +277,15 @@ button { cursor: pointer; border: none; background: #2563eb; color: white; borde
   .m-btns button { width: 100%; padding: 3px 0; font-size: 8px; border-radius: 2px; }
 }
 
-/* 共有卡片样式 (桌面端) */
-.img-card { border: 1px solid #f0f0f0; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; background: #fff; }
-.img-box { width: 100%; aspect-ratio: 1/1; overflow: hidden; cursor: zoom-in; background: #f9f9f9; }
-.img-box img { width: 100%; height: 100%; object-fit: cover; }
-.img-info { padding: 5px; text-align: center; }
-.img-name { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; color: #374151; }
-.img-btns { display: flex; flex-direction: column; gap: 3px; }
-.img-btns button { padding: 4px 0; font-size: 10px; }
+/* 共有样式 */
+.img-card, .m-card { border: 1px solid #f0f0f0; border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; background: #fff; }
+.img-box, .m-img-box { width: 100%; aspect-ratio: 1/1; overflow: hidden; cursor: zoom-in; background: #f9f9f9; }
+.img-box img, .m-img-box img { width: 100%; height: 100%; object-fit: cover; }
+.img-info, .m-info { padding: 5px; text-align: center; }
+.img-name, .m-name { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 5px; color: #374151; }
+.img-btns, .m-btns { display: flex; flex-direction: column; gap: 3px; }
+.img-btns button, .m-btns button { padding: 4px 0; font-size: 10px; }
 
-/* 大图预览 */
 #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; justify-content: center; align-items: center; }
 #modal img { max-width: 95%; max-height: 95%; object-fit: contain; }
 </style>
@@ -278,7 +296,7 @@ button { cursor: pointer; border: none; background: #2563eb; color: white; borde
   <header>图库管理</header>
   <main>
     <div class="toolbar">
-      <button onclick="loadDirs()">刷新</button>
+      <button id="sortBtn" onclick="toggleSort()">排序: 时间↓</button>
       <button onclick="mkdir()">新建目录</button>
       <button onclick="upload()">上传图片</button>
     </div>
@@ -291,7 +309,7 @@ button { cursor: pointer; border: none; background: #2563eb; color: white; borde
   <header>图库管理</header>
   <main>
     <div class="toolbar">
-      <button onclick="loadDirs()">刷新</button>
+      <button id="sortBtnM" onclick="toggleSort()">排序: 时间↓</button>
       <button onclick="mkdir()">新建</button>
       <button onclick="upload()">上传</button>
     </div>
@@ -303,19 +321,12 @@ button { cursor: pointer; border: none; background: #2563eb; color: white; borde
 <div id="modal" onclick="this.style.display='none'"><img id="modalImg" src=""></div>
 
 <script>
-function bufferToBase64(buffer) {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-    reader.readAsDataURL(new Blob([buffer]));
-  });
-}
-
 function getCDN(path) {
-  return window.location.origin + "/i/" + path;
+  return window.location.origin + "/i/" + encodeURIComponent(path);
 }
 
 let cur = "";
+let sortMode = "time";
 
 async function loadDirs() {
   const res = await fetch("/api/list?path=");
@@ -323,8 +334,8 @@ async function loadDirs() {
   const dirs = data.filter(i => i.type === "dir");
   
   const dirsBox = document.getElementById("dirs");
-  dirsBox.innerHTML = "";
   const dirsMBox = document.getElementById("dirs-m");
+  dirsBox.innerHTML = "";
   dirsMBox.innerHTML = "";
 
   dirs.forEach(dir => {
@@ -344,9 +355,20 @@ async function loadDirs() {
 
 async function loadImages() {
   const res = await fetch("/api/list?path=" + encodeURIComponent(cur));
-  const data = await res.json();
-  const files = data.filter(item => item.type === "file");
-  
+  let files = (await res.json()).filter(item => item.type === "file");
+
+  if (sortMode === "time") {
+    files.sort((a, b) => {
+      const matchA = a.name.match(/_(\\d{13,})\\./);
+      const matchB = b.name.match(/_(\\d{13,})\\./);
+      const timeA = matchA ? parseInt(matchA[1]) : 0;
+      const timeB = matchB ? parseInt(matchB[1]) : 0;
+      return timeB - timeA;   // 新上传的（时间戳大）排最前
+    });
+  } else {
+    files.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   const listBox = document.getElementById("list");
   const listMBox = document.getElementById("list-m");
   listBox.innerHTML = "";
@@ -387,6 +409,17 @@ async function loadImages() {
   });
 }
 
+function toggleSort() {
+  sortMode = sortMode === "time" ? "name" : "time";
+  const text = sortMode === "time" ? "排序: 时间↓" : "排序: 字母";
+  
+  document.getElementById("sortBtn").textContent = text;
+  const sortBtnM = document.getElementById("sortBtnM");
+  if (sortBtnM) sortBtnM.textContent = text;
+  
+  loadImages();
+}
+
 function showFull(url) {
   document.getElementById("modalImg").src = url;
   document.getElementById("modal").style.display = "flex";
@@ -420,7 +453,11 @@ async function upload() {
     const files = Array.from(input.files);
     for (const file of files) {
       const buf = await file.arrayBuffer();
-      const base64 = await bufferToBase64(buf);
+      const base64 = await new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(new Blob([buf]));
+      });
       await fetch("/api/upload?path=" + encodeURIComponent(cur) + "&name=" + encodeURIComponent(file.name), {
         method: "POST",
         body: base64
@@ -431,7 +468,8 @@ async function upload() {
   input.click();
 }
 
-loadDirs();
+// 初始化
+loadDirs().then(() => loadImages());
 </script>
 </body>
 </html>`);
