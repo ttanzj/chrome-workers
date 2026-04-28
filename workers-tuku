@@ -103,26 +103,62 @@ export default {
         const meta = i.type === "file" ? (await env.GALLERY_KV.get("meta:" + itemPath) || "1") : null;
         res.push({ name: i.name, path: itemPath, type: i.type, meta });
       }
-      // 写入 60 秒缓存
+      // 写入 86400秒缓存
       await env.GALLERY_KV.put(cacheKey, JSON.stringify(res), { expirationTtl: 86400 });
       return json(res);
     }
 
-    // 上传 API
-    if (url.pathname === "/api/upload") {
-      const path = fixPath(url.searchParams.get("path") || "");
-      const name = url.searchParams.get("name");
-      const base64 = await request.text();
-      const finalFilePath = (path ? path + "/" : "") + name;
-      
-      await ghPut(finalFilePath, base64);
-      // 写入当前精确时间戳
-      await env.GALLERY_KV.put("meta:" + fixPath(finalFilePath), String(Date.now()));
-      // 核心：上传后立即删除当前目录的缓存列表，确保下次刷新是新的
-      await env.GALLERY_KV.delete(`list:${path}`);
-      return json({ ok: 1 });
-    }
+   // 上传 API - 使用已有 list 防重名版（不建新 index）
+if (url.pathname === "/api/upload") {
+  const path = fixPath(url.searchParams.get("path") || "");
+  let originalName = url.searchParams.get("name") || "untitled.jpg";
+  const base64 = await request.text();
 
+  // 1. 必要清洗文件名
+  let cleanName = originalName
+    .replace(/[\/\\]/g, "_")
+    .replace(/[<>:"|?*\x00-\x1F]/g, "")
+    .trim();
+
+  // 2. 获取当前目录的真实文件列表（复用已有的 gh 函数）
+  const listData = await gh(path);   // 这里调用 GitHub API 获取目录内容
+
+  // 提取已有文件名（只取 type === "file"）
+  const existingNames = new Set(
+    listData
+      .filter(i => i.type === "file" && i.name !== ".keep")
+      .map(i => i.name)
+  );
+
+  // 3. 检查重名并生成最终文件名（只在内存中循环）
+  let finalName = cleanName;
+  let counter = 1;
+
+  while (existingNames.has(finalName)) {
+    const extIndex = cleanName.lastIndexOf('.');
+    if (extIndex > 0) {
+      const base = cleanName.substring(0, extIndex);
+      const ext = cleanName.substring(extIndex);
+      finalName = `${base} (${counter})${ext}`;
+    } else {
+      finalName = `${cleanName} (${counter})`;
+    }
+    counter++;
+  }
+
+  const finalPath = path ? `${path}/${finalName}` : finalName;
+
+  // 4. 上传到 GitHub
+  await ghPut(finalPath, base64);
+
+  // 5. 写入 meta: 时间戳（原有机制，用于时间排序）
+  await env.GALLERY_KV.put("meta:" + fixPath(finalPath), String(Date.now()));
+
+  // 6. 清 list 缓存（让下次 list 能看到新文件）
+  await env.GALLERY_KV.delete(`list:${path}`);
+
+  return json({ ok: 1, path: finalPath, name: finalName });
+}
     // 删除 API
     if (url.pathname === "/api/delete") {
       const p = fixPath(await request.text());
@@ -232,15 +268,31 @@ export default {
     const data = await fetch(\`/api/list?path=\${encodeURIComponent(curPath)}&t=\${Date.now()}\`).then(r => r.json());
     let files = data.filter(i => i.type === "file");
     
-    if(sortMode === "time") {
-      files.sort((a,b) => {
-        const valA = parseInt(a.meta) || 1;
-        const valB = parseInt(b.meta) || 1;
-        return valB - valA; // 降序：大的（新的）在前
-      });
-    } else {
-      files.sort((a,b) => a.name.localeCompare(b.name));
-    }
+    if (sortMode === "time") {
+      // 时间排序：从新到旧（meta 越大越新，meta=1 为最旧）
+        files.sort((a, b) => {
+            const valA = Number(a.meta) || 1;
+                const valB = Number(b.meta) || 1;
+                    return valB - valA;
+                      });
+                      } else {
+                        // 字母排序：a → z，与 meta 完全无关
+                        files = files
+                          .map((f, idx) => ({
+                              ...f,
+                                  __idx: idx   // 强制打散稳定排序
+                                    }))
+                                      .sort((a, b) => {
+                                          const r = a.name.toLowerCase().localeCompare(
+                                                b.name.toLowerCase(),
+                                                      "en"
+                                                          );
+                                                              if (r !== 0) return r;
+                                                                  // 永远不返回 0
+                                                                      return a.__idx - b.__idx;
+                                                                        })
+                                                                          .map(({ __idx, ...f }) => f);
+                                }
 
     grid.innerHTML = "";
     files.forEach(f => {
