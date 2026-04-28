@@ -1,5 +1,6 @@
 [Workers1-3](README.md) | [workers-domain](README.domain.md)  | [workers-blog](README.blog.md) | workers-tuku
 
+##频繁操作易被github标记，已被标记一个库，慎用！<br>
 ### 这是一个依托cloudflar的workers做前端，依托github存储建立的个人图库项目，由Ai制作而成。
 一. 准备 GitHub 仓库<br>
 你需要：<br>
