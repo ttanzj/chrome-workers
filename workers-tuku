@@ -317,7 +317,12 @@ if (url.pathname === "/api/upload") {
   }
 
   function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
-  function copy(u) { navigator.clipboard.writeText(u); alert("直链已复制"); }
+  function copy(u) { 
+  // 将编码后的路径中的 %2F 替换回 /，但不影响图片预览使用的原始 URL
+  const fixedUrl = u.replace(/%2F/g, '/');
+  navigator.clipboard.writeText(fixedUrl); 
+  alert("直链已复制 (已修复路径斜杠)"); 
+}
   
   async function del(p) { 
     if(confirm("确定删除吗？")) { 
