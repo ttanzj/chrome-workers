@@ -13,7 +13,7 @@ INSERT INTO folders (name) VALUES ('Default');
 进入：Cloudflare Dashboard → Workers & Pages → KV<br>
 创建 D1 Namespace：<br>
 绑定D1库，<br>
-`DB`👉 自己建的库名
+`DB`👉 自己建的库名<br>
 四、绑定环境变量（密码）<br>
 进入 Worker：👉 Settings → Variables → Environment Variables<br>
 添加以下变量：<br>
