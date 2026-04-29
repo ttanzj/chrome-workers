@@ -2,30 +2,19 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    /* ================= 1. 基础配置与工具 ================= */
+    /* ================= 1. 基础工具 ================= */
     const isAuthed = (req) => (req.headers.get("cookie") || "").includes("gallery_auth=1");
-    
     const json = (data) => new Response(JSON.stringify(data), {
-      headers: { 
-        "content-type": "application/json;charset=UTF-8",
-        "Cache-Control": "no-store, no-cache, must-revalidate" 
-      }
+      headers: { "content-type": "application/json;charset=UTF-8", "Cache-Control": "no-store" }
     });
+    const html = (body) => new Response(body, { headers: { "content-type": "text/html;charset=UTF-8" } });
 
-    const html = (body) => new Response(body, { 
-      headers: { "content-type": "text/html;charset=UTF-8" } 
-    });
-
-    /* ================= 2. D1 数据库通讯路由 ================= */
-
-    // 图片代理路由：支持带原文件名的直链
+    /* ================= 2. 路由与 D1 通讯 ================= */
     if (url.pathname.startsWith("/i/")) {
-      const parts = url.pathname.split("/");
-      const id = parts[2]; // 获取 ID 部分
+      const id = url.pathname.split("/")[2]; 
       try {
         const img = await env.DB.prepare("SELECT data, mime_type, name FROM images WHERE id = ?").bind(id).first();
         if (!img) return new Response("Not Found", { status: 404 });
-
         const binary = Uint8Array.from(atob(img.data), c => c.charCodeAt(0));
         return new Response(binary, {
           headers: {
@@ -34,17 +23,13 @@ export default {
             "Content-Disposition": `inline; filename="${encodeURIComponent(img.name)}"`
           }
         });
-      } catch (e) {
-        return new Response("Error", { status: 500 });
-      }
+      } catch (e) { return new Response("Error", { status: 500 }); }
     }
 
-    // 登录页面 (原始 UI)
     if (url.pathname === "/login") {
       return html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>登录</title><style>body{font-family:sans-serif;background:#f3f4f6;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#fff;padding:30px;border-radius:12px;text-align:center;width:280px}input{width:100%;padding:10px;margin:15px 0;border:1px solid #ddd;border-radius:6px;box-sizing:border-box}button{width:100%;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer}</style></head><body><div class="box"><h3>图库管理登录</h3><input id="p" type="password" placeholder="密码"><button onclick="login()">进入</button></div><script>async function login(){const r=await fetch("/api/login",{method:"POST",body:document.getElementById("p").value});if(r.ok)location="/";else alert("密码错误")}<\/script></body></html>`);
     }
 
-    // 登录 API
     if (url.pathname === "/api/login" && request.method === "POST") {
       if (await request.text() === env.GALLERY_PASSWORD) {
         return new Response("ok", { headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" } });
@@ -54,47 +39,51 @@ export default {
 
     if (!isAuthed(request)) return Response.redirect(url.origin + "/login", 302);
 
-    /* ================= 3. 业务 API (D1 驱动) ================= */
-
-    // 列表 API
+    /* ================= 3. 业务 API ================= */
     if (url.pathname === "/api/list") {
-      const folderId = url.searchParams.get("path"); // 沿用 path 参数名保持前端兼容
+      const folderId = url.searchParams.get("path");
       if (!folderId) {
-        // 获取所有目录，排除 Default
         const { results } = await env.DB.prepare("SELECT id as path, name FROM folders WHERE name != 'Default'").all();
         return json(results.map(r => ({ ...r, type: "dir" })));
       }
-      // 获取目录下图片
       const { results } = await env.DB.prepare("SELECT id, name, created_at as meta FROM images WHERE folder_id = ?").bind(folderId).all();
       return json(results.map(r => ({ ...r, type: "file", path: r.id.toString() })));
     }
 
-    // 上传 API
+    if (url.pathname === "/api/check-exist") {
+      const folderId = url.searchParams.get("folderId");
+      const name = url.searchParams.get("name");
+      const exist = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ?").bind(folderId, name).first();
+      return json({ exists: !!exist });
+    }
+
     if (url.pathname === "/api/upload") {
       const folderId = url.searchParams.get("path");
       const name = url.searchParams.get("name") || "untitled.jpg";
+      const mode = url.searchParams.get("mode");
       const base64 = await request.text();
       const mime = name.endsWith(".png") ? "image/png" : (name.endsWith(".gif") ? "image/gif" : "image/jpeg");
-      
-      await env.DB.prepare("INSERT INTO images (folder_id, name, data, mime_type, created_at) VALUES (?, ?, ?, ?, ?)").bind(folderId, name, base64, mime, Date.now()).run();
+      if (mode === "overwrite") {
+        await env.DB.prepare("UPDATE images SET data = ?, created_at = ? WHERE folder_id = ? AND name = ?").bind(base64, Date.now(), folderId, name).run();
+      } else {
+        await env.DB.prepare("INSERT INTO images (folder_id, name, data, mime_type, created_at) VALUES (?, ?, ?, ?, ?)").bind(folderId, name, base64, mime, Date.now()).run();
+      }
       return json({ ok: 1 });
     }
 
-    // 删除 API
     if (url.pathname === "/api/delete") {
       const id = await request.text();
       await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(id).run();
       return json({ ok: 1 });
     }
 
-    // 新建目录
     if (url.pathname === "/api/mkdir") {
       const name = await request.text();
       await env.DB.prepare("INSERT INTO folders (name) VALUES (?)").bind(name).run();
       return json({ ok: 1 });
     }
 
-    /* ================= 4. 前端界面 (原始 UI 设计) ================= */
+    /* ================= 4. 前端界面 ================= */
     if (url.pathname === "/") {
       return html(`<!DOCTYPE html>
 <html lang="zh-CN">
@@ -112,23 +101,28 @@ export default {
   .dir-bar span { padding: 6px 14px; background: #fff; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; font-size: 13px; }
   .dir-bar span.active { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: bold; }
   
-  /* 移动端 5 列布局 - 完全保留原始设计 */
+  /* 网格与卡片 */
   .img-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
-  .card .name { display: none; }
-  .card .info { padding: 4px 2px; text-align: center; }
-  .card .info button { padding: 2px 4px; font-size: 9px; min-width: 0; }
+  .card { background: #fff; border-radius: 4px; overflow: hidden; border: 1px solid #e5e7eb; display: flex; flex-direction: column; }
+  .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  
+  /* 操作栏基础样式 (移动端优先) */
+  .info { padding: 4px 2px; display: flex; gap: 2px; }
+  .info .name { display: none; } /* 移动端隐藏名称 */
+  .btn-copy, .btn-del { flex: 1; padding: 4px 0; border: none; border-radius: 3px; color: #fff; font-size: 9px; cursor: pointer; text-align: center; }
+  .btn-copy { background: #2563eb; }
+  .btn-del { background: #ef4444; }
 
-  /* 桌面端密集布局 - 完全保留原始设计 */
+  /* 桌面端调整 */
   @media (min-width: 601px) {
-    .img-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
-    .card .name { display: block; font-size: 10px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
-    .card .info { padding: 6px; }
-    .card .info button { padding: 4px 8px; font-size: 12px; }
+    .img-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; }
+    .info { padding: 6px; flex-direction: column; gap: 4px; }
+    .info .name { display: block; font-size: 10px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 2px; text-align: center; }
+    .btn-group { display: flex; gap: 4px; }
+    .btn-copy, .btn-del { padding: 4px 0; font-size: 10px; }
   }
 
-  .card { background: #fff; border-radius: 4px; overflow: hidden; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); transition: 0.2s; }
-  .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; position: relative; }
-  .img-box img { width: 100%; height: 100%; object-fit: cover; }
   #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; }
   #modal img { max-width: 98%; max-height: 98%; }
 </style>
@@ -152,15 +146,12 @@ export default {
 
   async function loadDirs() {
     const data = await fetch("/api/list?path=&t=" + Date.now()).then(r => r.json());
-    const dirs = data; // 已经在后端过滤了 Default
     const bar = document.getElementById("dirBar");
     bar.innerHTML = "";
-
-    if (dirs.length > 0) {
-      dirs.forEach((d, index) => {
+    if (data.length > 0) {
+      data.forEach((d, index) => {
         const s = document.createElement("span");
         s.textContent = d.name;
-        // 自动选中第一个
         if(curPath === "" && index === 0) { curPath = d.path; s.className = "active"; }
         else if(curPath == d.path) { s.className = "active"; }
         s.onclick = () => { 
@@ -172,7 +163,6 @@ export default {
         bar.appendChild(s);
       });
     }
-
     if(curPath) loadImages();
   }
 
@@ -180,29 +170,29 @@ export default {
     const grid = document.getElementById("imgGrid");
     grid.style.opacity = "0.5";
     const data = await fetch(\`/api/list?path=\${encodeURIComponent(curPath)}&t=\${Date.now()}\`).then(r => r.json());
-    let files = data;
     
     if (sortMode === "time") {
-      files.sort((a, b) => {
-        const valA = Number(a.meta) || 1;
-        const valB = Number(b.meta) || 1;
-        return valB - valA;
-      });
+      data.sort((a, b) => (Number(b.meta) || 0) - (Number(a.meta) || 0));
     } else {
-      files.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase(), "en"));
+      data.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
     }
 
     grid.innerHTML = "";
-    files.forEach(f => {
-      // 直链携带 ID 和 原文件名
+    data.forEach(f => {
       const shareUrl = window.location.origin + "/i/" + f.path + "/" + encodeURIComponent(f.name);
       const div = document.createElement("div");
       div.className = "card";
-      div.innerHTML = \`<div class="img-box" onclick="show('\${shareUrl}')"><img src="\${shareUrl}" loading="lazy"></div>
+      // 这里的 HTML 结构重新梳理，确保类名与 CSS 对应
+      div.innerHTML = \`
+        <div class="img-box" onclick="show('\${shareUrl}')">
+          <img src="\${shareUrl}" loading="lazy">
+        </div>
         <div class="info">
           <div class="name">\${f.name}</div>
-          <button onclick="copy('\${shareUrl}')">复制</button>
-          <button style="background:#ef4444;margin-left:4px" onclick="del('\${f.path}')">删除</button>
+          <div class="btn-group" style="display:flex; width:100%; gap:2px;">
+            <button class="btn-copy" onclick="copy('\${shareUrl}')">复制</button>
+            <button class="btn-del" onclick="del('\${f.path}')">删除</button>
+          </div>
         </div>\`;
       grid.appendChild(div);
     });
@@ -217,23 +207,23 @@ export default {
 
   function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
   function copy(u) { 
-    navigator.clipboard.writeText(u); 
-    alert("直链已复制 (含原文件名)"); 
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(u).then(() => alert("直链已复制"));
+    } else {
+      alert("无法复制到剪贴板，请检查浏览器权限");
+    }
   }
   
   async function del(p) { 
     if(confirm("确定删除吗？")) { 
       await fetch("/api/delete",{method:"POST",body:p}); 
-      setTimeout(loadImages, 300); 
+      loadImages(); 
     } 
   }
 
   async function mkdir() { 
-    const n = prompt("目录名称:"); 
-    if(n) { 
-      await fetch("/api/mkdir",{method:"POST",body:n}); 
-      loadDirs(); 
-    } 
+    const n = prompt("新建子目录名称:"); 
+    if(n) { await fetch("/api/mkdir",{method:"POST",body:n}); loadDirs(); } 
   }
 
   async function upload() {
@@ -241,14 +231,20 @@ export default {
     const inp = document.createElement("input"); inp.type="file"; inp.multiple=true; inp.accept="image/*";
     inp.onchange = async () => {
       for(const f of inp.files) {
+        const check = await fetch(\`/api/check-exist?folderId=\${curPath}&name=\${encodeURIComponent(f.name)}\`).then(r=>r.json());
+        let mode = "";
+        if (check.exists) {
+          if (!confirm(\`文件 "\${f.name}" 已存在。\\n点击确定【覆盖】，点击取消【跳过】。\`)) continue;
+          mode = "overwrite";
+        }
         const b = await new Promise(r => { 
           const rd = new FileReader(); 
           rd.onload = () => r(rd.result.split(",")[1]); 
           rd.readAsDataURL(f); 
         });
-        await fetch("/api/upload?path="+encodeURIComponent(curPath)+"&name="+encodeURIComponent(f.name), {method:"POST", body:b});
+        await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(f.name)}&mode=\${mode}\`, {method:"POST", body:b});
       }
-      setTimeout(loadImages, 500);
+      loadImages();
     };
     inp.click();
   }
