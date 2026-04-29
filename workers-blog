@@ -134,7 +134,8 @@ function parseTables(text) {
         i++;
       }
 
-      let html = `<table style="border-collapse:collapse;width:100%;margin:8px 0;background:#fff;display:table;">`;
+      // 调整：width: auto 且 max-width: 100% 确保表格自适应
+      let html = `<table style="border-collapse:collapse;width:auto;max-width:100%;margin:8px 0;background:#fff;display:table;">`;
       const parseRow = (row) => row.split('|').filter((c, idx, arr) => (idx !== 0 && idx !== arr.length - 1) || c.trim());
       
       html += `<thead><tr>`;
@@ -162,24 +163,19 @@ function parseTables(text) {
 
 /* ================= Markdown 核心解析 ================= */
 function md(t) {
-  // 1. HTML 转义
   let content = escape(t);
 
-  // 2. 处理转义反斜杠 (保护被转义的符号)
-  // 重点：匹配反斜杠后接 [任何非字母数字] 或者 [已经被转义的实体前缀 &]
+  // 1. 处理转义反斜杠 (匹配常见符号及其 HTML 转义后的实体)
   content = content.replace(/\\([*#_>`[\]()!|~-]|&[a-z0-9#]+;)/gi, '%%ESC_$1%%');
 
-  // 3. 处理代码块
   const codes = [];
   content = content.replace(/```([\s\S]*?)```/g, (m, p1) => {
     codes.push(p1);
     return `%%CODEBLOCK_${codes.length - 1}%%`;
   });
 
-  // 4. 解析表格
   content = parseTables(content);
 
-  // 5. 块级元素解析
   content = content
     .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:12px 0;">')
     .replace(/^###### (.*$)/gm, '<h6 style="margin:4px 0 2px 0;">$1</h6>')
@@ -193,7 +189,6 @@ function md(t) {
     .replace(/^- (.*$)/gm, '<ul style="margin:2px 0;"><li style="margin:0;">$1</li></ul>')
     .replace(/<\/ul>\n<ul>/g, '');
 
-  // 6. 行内元素解析
   content = content
     .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
@@ -203,17 +198,12 @@ function md(t) {
     .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>')
     .replace(/`(.*?)`/g, '<code>$1</code>');
 
-  // 7. 换行逻辑
   content = content.replace(/\n/g, "<br>").replace(/&lt;br&gt;/g, "<br>");
 
-  // 8. 还原代码块
   content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}</code></pre>`);
   
-  // 9. 还原转义符 (去掉 %%ESC_%%)
+  // 还原转义符
   content = content.replace(/%%ESC_(.*?)%%/g, '$1');
-
-  // 10. 最后一步：还原 &emsp; 确保其不被之前的流程干扰
-  content = content.replace(/&amp;emsp;/g, '&emsp;');
   
   return content;
 }
@@ -225,13 +215,42 @@ function baseStyle() {
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
 body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.4; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
-.view-content { min-height: 450px; word-wrap: break-word; font-size: 15.5px; }
-.view-content p, .view-content div, .view-content blockquote { margin: 0.25em 0; }
-.view-content li { margin: 0.1em 0; }
-.view-content h1, .view-content h2, .view-content h3, .view-content h4 { margin-top: 0.7em; margin-bottom: 0.3em; }
-.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 8px 0; line-height: 1.4; }
-.view-content table { margin: 10px 0; border-spacing: 0; display: table; }
-.view-content ul, .view-content ol { margin: 0.2em 0 0.2em 25px; padding: 0; }
+
+.view-content { 
+  min-height: 450px; 
+  word-wrap: break-word; 
+  font-size: 15.5px; 
+}
+/* 调整间距：上间距保留，下间距缩小到约 0.08em (原 0.25em 的三分之一) */
+/* 并增加首行缩进 2em */
+.view-content br + br { display: block; content: ""; margin-top: 0.5em; }
+.view-content p, .view-content div { 
+  margin-top: 0.25em; 
+  margin-bottom: 0.08em; 
+  text-indent: 2em; 
+}
+/* 针对引用块内部也应用缩进 */
+.view-content blockquote { 
+  border-left: 4px solid #ddd; 
+  padding: 2px 12px; 
+  color: #666; 
+  margin: 6px 0; 
+  background: #f9f9f9; 
+  text-indent: 2em;
+}
+/* 列表不缩进 */
+.view-content li { margin: 0.1em 0; text-indent: 0; }
+.view-content h1, .view-content h2, .view-content h3, .view-content h4 { 
+  margin-top: 0.7em; 
+  margin-bottom: 0.1em; 
+  text-indent: 0;
+}
+
+.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 8px 0; line-height: 1.4; text-indent: 0; }
+.view-content table { margin: 10px 0; border-spacing: 0; display: table; text-indent: 0; }
+.view-content ul, .view-content ol { margin: 0.2em 0 0.2em 25px; padding: 0; text-indent: 0; }
+
+/* 登录、卡片等其他样式维持不变 */
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
