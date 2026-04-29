@@ -72,7 +72,8 @@ export default {
       const name = url.searchParams.get("name") || "untitled.jpg";
       const mode = url.searchParams.get("mode");
       const base64 = await request.text();
-      const mime = name.endsWith(".png") ? "image/png" : (name.endsWith(".gif") ? "image/gif" : "image/jpeg");
+      const lowerName = name.toLowerCase();
+      const mime = lowerName.endsWith(".png") ? "image/png" : (lowerName.endsWith(".gif") ? "image/gif" : "image/jpeg");
       
       let resId;
       if (mode === "overwrite") {
@@ -248,27 +249,43 @@ export default {
 
   async function upload() {
     if(!curPath) return alert("请先选择目录");
-    const inp = document.createElement("input"); inp.type="file"; inp.multiple=true; inp.accept="image/*";
+    
+    const inp = document.createElement("input"); 
+    inp.type="file"; 
+    inp.multiple=true; 
+    // 关键修正：移除 accept="image/*" 并改用通用类型，这样手机会弹出“文件管理器”而不是“相册”
+    // 手机端的“相册选择器”会自动重命名文件为数字，而“文件管理器”会保留原始文件名
+    inp.accept="*/*"; 
+    
     inp.onchange = async () => {
-      for(const f of inp.files) {
-        const check = await fetch(\`/api/check-exist?folderId=\${curPath}&name=\${encodeURIComponent(f.name)}\`).then(r=>r.json());
+      const files = Array.from(inp.files);
+      for(const f of files) {
+        // 确保跳过非图片文件（如果需要的话，也可以不限制）
+        if (!f.type.startsWith('image/')) {
+           if(!confirm(\`文件 "\${f.name}" 似乎不是图片，是否继续上传？\`)) continue;
+        }
+
+        const fileName = f.name;
+        const check = await fetch(\`/api/check-exist?folderId=\${curPath}&name=\${encodeURIComponent(fileName)}\`).then(r=>r.json());
         let mode = "";
         if (check.exists) {
-          if (!confirm(\`文件 "\${f.name}" 已存在。\\n点击确定【覆盖】，点击取消【跳过】。\`)) continue;
+          if (!confirm(\`文件 "\${fileName}" 已存在。\\n确定覆盖吗？\`)) continue;
           mode = "overwrite";
         }
-        const b = await new Promise(r => { 
+
+        const b = await new Promise(resolve => { 
           const rd = new FileReader(); 
-          rd.onload = () => r(rd.result.split(",")[1]); 
+          rd.onload = () => resolve(rd.result.split(",")[1]); 
           rd.readAsDataURL(f); 
         });
         
-        // 上传并获取返回的 ID
-        const res = await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(f.name)}&mode=\${mode}\`, {method:"POST", body:b}).then(r=>r.json());
+        const res = await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(fileName)}&mode=\${mode}\`, {
+          method: "POST", 
+          body: b
+        }).then(r=>r.json());
         
-        // 预热缓存逻辑：上传成功后即刻静默请求该图片直链
         if (res.id) {
-          const warmUrl = window.location.origin + "/i/" + res.id + "/" + encodeURIComponent(f.name);
+          const warmUrl = window.location.origin + "/i/" + res.id + "/" + encodeURIComponent(fileName);
           fetch(warmUrl, { mode: 'no-cors' }); 
         }
       }
