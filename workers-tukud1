@@ -4,15 +4,23 @@ export default {
 
     /* ================= 1. 基础工具 ================= */
     const isAuthed = (req) => (req.headers.get("cookie") || "").includes("gallery_auth=1");
+    
     const json = (data) => new Response(JSON.stringify(data), {
-      headers: { "content-type": "application/json;charset=UTF-8", "Cache-Control": "no-store" }
+      headers: { 
+        "content-type": "application/json;charset=UTF-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate" 
+      }
     });
-    const html = (body) => new Response(body, { headers: { "content-type": "text/html;charset=UTF-8" } });
 
-    /* ================= 2. 路由与 D1 交互 ================= */
-    // 图片直链路由：支持带原文件名的格式 /i/ID/filename.ext
+    const html = (body) => new Response(body, { 
+      headers: { "content-type": "text/html;charset=UTF-8" } 
+    });
+
+    /* ================= 2. 核心路由与 D1 通讯 ================= */
+
     if (url.pathname.startsWith("/i/")) {
-      const id = url.pathname.split("/")[2]; 
+      const parts = url.pathname.split("/");
+      const id = parts[2]; 
       try {
         const img = await env.DB.prepare("SELECT data, mime_type, name FROM images WHERE id = ?").bind(id).first();
         if (!img) return new Response("Not Found", { status: 404 });
@@ -27,7 +35,6 @@ export default {
       } catch (e) { return new Response("Error", { status: 500 }); }
     }
 
-    // 登录页面
     if (url.pathname === "/login") {
       return html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>登录</title><style>body{font-family:sans-serif;background:#f3f4f6;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#fff;padding:30px;border-radius:12px;text-align:center;width:280px}input{width:100%;padding:10px;margin:15px 0;border:1px solid #ddd;border-radius:6px;box-sizing:border-box}button{width:100%;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer}</style></head><body><div class="box"><h3>图库管理登录</h3><input id="p" type="password" placeholder="密码"><button onclick="login()">进入</button></div><script>async function login(){const r=await fetch("/api/login",{method:"POST",body:document.getElementById("p").value});if(r.ok)location="/";else alert("密码错误")}<\/script></body></html>`);
     }
@@ -42,6 +49,7 @@ export default {
     if (!isAuthed(request)) return Response.redirect(url.origin + "/login", 302);
 
     /* ================= 3. 业务 API ================= */
+
     if (url.pathname === "/api/list") {
       const folderId = url.searchParams.get("path");
       if (!folderId) {
@@ -56,7 +64,7 @@ export default {
       const folderId = url.searchParams.get("folderId");
       const name = url.searchParams.get("name");
       const exist = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ?").bind(folderId, name).first();
-      return json({ exists: !!exist });
+      return json({ exists: !!exist, id: exist ? exist.id : null });
     }
 
     if (url.pathname === "/api/upload") {
@@ -65,12 +73,18 @@ export default {
       const mode = url.searchParams.get("mode");
       const base64 = await request.text();
       const mime = name.endsWith(".png") ? "image/png" : (name.endsWith(".gif") ? "image/gif" : "image/jpeg");
+      
+      let resId;
       if (mode === "overwrite") {
-        await env.DB.prepare("UPDATE images SET data = ?, created_at = ? WHERE folder_id = ? AND name = ?").bind(base64, Date.now(), folderId, name).run();
+        const row = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ?").bind(folderId, name).first();
+        await env.DB.prepare("UPDATE images SET data = ?, created_at = ? WHERE id = ?").bind(base64, Date.now(), row.id).run();
+        resId = row.id;
       } else {
-        await env.DB.prepare("INSERT INTO images (folder_id, name, data, mime_type, created_at) VALUES (?, ?, ?, ?, ?)").bind(folderId, name, base64, mime, Date.now()).run();
+        const info = await env.DB.prepare("INSERT INTO images (folder_id, name, data, mime_type, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id")
+                                .bind(folderId, name, base64, mime, Date.now()).first();
+        resId = info.id;
       }
-      return json({ ok: 1 });
+      return json({ ok: 1, id: resId });
     }
 
     if (url.pathname === "/api/delete") {
@@ -103,22 +117,18 @@ export default {
   .dir-bar span { padding: 6px 14px; background: #fff; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; font-size: 13px; }
   .dir-bar span.active { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: bold; }
   
-  /* 网格系统 */
   .img-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
   .card { background: #fff; border-radius: 4px; overflow: hidden; border: 1px solid #e5e7eb; display: flex; flex-direction: column; }
   .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  /* 修正显示不全：使用 contain */
   .img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
   
-  /* 操作栏：移动端样式 */
   .info { padding: 4px 2px; }
   .info .name { display: none; }
   .btn-group { display: flex; gap: 2px; width: 100%; }
-  .btn-copy, .btn-del { flex: 1; padding: 6px 0; border: none; border-radius: 3px; color: #fff; font-size: 9px; cursor: pointer; }
+  .btn-copy, .btn-del { flex: 1; padding: 6px 0; border: none; border-radius: 3px; color: #fff; font-size: 9px; cursor: pointer; text-align: center; }
   .btn-copy { background: #2563eb; }
   .btn-del { background: #ef4444; }
 
-  /* 桌面端样式调整 */
   @media (min-width: 601px) {
     .img-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; }
     .info { padding: 6px; }
@@ -147,7 +157,7 @@ export default {
 <script>
   let curPath = ""; 
   let sortMode = "time";
-  let cachedFiles = []; // 本地缓存列表，提速排序
+  let cachedFiles = []; 
 
   async function loadDirs() {
     const data = await fetch("/api/list?path=&t=" + Date.now()).then(r => r.json());
@@ -171,7 +181,6 @@ export default {
     if(curPath) fetchImages();
   }
 
-  // 联网获取数据
   async function fetchImages() {
     const grid = document.getElementById("imgGrid");
     grid.style.opacity = "0.5";
@@ -180,7 +189,6 @@ export default {
     renderImages();
   }
 
-  // 本地渲染逻辑（不联网，排序秒开）
   function renderImages() {
     const grid = document.getElementById("imgGrid");
     let files = [...cachedFiles];
@@ -215,7 +223,7 @@ export default {
   function toggleSort() {
     sortMode = (sortMode === "time") ? "name" : "time";
     document.getElementById("sortBtn").textContent = (sortMode === "time") ? "排序: 时间↓" : "排序: 字母A-Z";
-    renderImages(); // 直接本地重排，不再联网请求
+    renderImages(); 
   }
 
   function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
@@ -234,7 +242,7 @@ export default {
   }
 
   async function mkdir() { 
-    const n = prompt("目录名称:"); 
+    const n = prompt("新建子目录名称:"); 
     if(n) { await fetch("/api/mkdir",{method:"POST",body:n}); loadDirs(); } 
   }
 
@@ -246,7 +254,7 @@ export default {
         const check = await fetch(\`/api/check-exist?folderId=\${curPath}&name=\${encodeURIComponent(f.name)}\`).then(r=>r.json());
         let mode = "";
         if (check.exists) {
-          if (!confirm(\`文件 "\${f.name}" 已存在。\\n确定覆盖吗？\`)) continue;
+          if (!confirm(\`文件 "\${f.name}" 已存在。\\n点击确定【覆盖】，点击取消【跳过】。\`)) continue;
           mode = "overwrite";
         }
         const b = await new Promise(r => { 
@@ -254,7 +262,15 @@ export default {
           rd.onload = () => r(rd.result.split(",")[1]); 
           rd.readAsDataURL(f); 
         });
-        await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(f.name)}&mode=\${mode}\`, {method:"POST", body:b});
+        
+        // 上传并获取返回的 ID
+        const res = await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(f.name)}&mode=\${mode}\`, {method:"POST", body:b}).then(r=>r.json());
+        
+        // 预热缓存逻辑：上传成功后即刻静默请求该图片直链
+        if (res.id) {
+          const warmUrl = window.location.origin + "/i/" + res.id + "/" + encodeURIComponent(f.name);
+          fetch(warmUrl, { mode: 'no-cors' }); 
+        }
       }
       fetchImages();
     };
