@@ -2,25 +2,26 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    /* ================= 1. 工具函数 ================= */
+    /* ================= 1. 基础配置与工具 ================= */
     const isAuthed = (req) => (req.headers.get("cookie") || "").includes("gallery_auth=1");
     
     const json = (data) => new Response(JSON.stringify(data), {
-      headers: { "content-type": "application/json;charset=UTF-8" }
+      headers: { 
+        "content-type": "application/json;charset=UTF-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate" 
+      }
     });
 
     const html = (body) => new Response(body, { 
       headers: { "content-type": "text/html;charset=UTF-8" } 
     });
 
-    /* ================= 2. 核心路由 ================= */
+    /* ================= 2. D1 数据库通讯路由 ================= */
 
-    // 图片代理：支持 /i/ID/文件名.ext 格式
+    // 图片代理路由：支持带原文件名的直链
     if (url.pathname.startsWith("/i/")) {
       const parts = url.pathname.split("/");
-      // parts[0]是空, parts[1]是"i", parts[2]是ID
-      const id = parts[2]; 
-      
+      const id = parts[2]; // 获取 ID 部分
       try {
         const img = await env.DB.prepare("SELECT data, mime_type, name FROM images WHERE id = ?").bind(id).first();
         if (!img) return new Response("Not Found", { status: 404 });
@@ -30,7 +31,6 @@ export default {
           headers: {
             "Content-Type": img.mime_type || "image/jpeg",
             "Cache-Control": "public, max-age=2592000",
-            // 关键：强制浏览器在下载时使用原文件名
             "Content-Disposition": `inline; filename="${encodeURIComponent(img.name)}"`
           }
         });
@@ -39,11 +39,12 @@ export default {
       }
     }
 
-    // 登录验证
+    // 登录页面 (原始 UI)
     if (url.pathname === "/login") {
       return html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>登录</title><style>body{font-family:sans-serif;background:#f3f4f6;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#fff;padding:30px;border-radius:12px;text-align:center;width:280px}input{width:100%;padding:10px;margin:15px 0;border:1px solid #ddd;border-radius:6px;box-sizing:border-box}button{width:100%;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer}</style></head><body><div class="box"><h3>图库管理登录</h3><input id="p" type="password" placeholder="密码"><button onclick="login()">进入</button></div><script>async function login(){const r=await fetch("/api/login",{method:"POST",body:document.getElementById("p").value});if(r.ok)location="/";else alert("密码错误")}<\/script></body></html>`);
     }
 
+    // 登录 API
     if (url.pathname === "/api/login" && request.method === "POST") {
       if (await request.text() === env.GALLERY_PASSWORD) {
         return new Response("ok", { headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" } });
@@ -53,72 +54,87 @@ export default {
 
     if (!isAuthed(request)) return Response.redirect(url.origin + "/login", 302);
 
-    /* ================= 3. 业务 API ================= */
+    /* ================= 3. 业务 API (D1 驱动) ================= */
 
+    // 列表 API
     if (url.pathname === "/api/list") {
-      const folderId = url.searchParams.get("folderId");
+      const folderId = url.searchParams.get("path"); // 沿用 path 参数名保持前端兼容
       if (!folderId) {
-        const { results } = await env.DB.prepare("SELECT id, name FROM folders").all();
-        return json(results || []);
+        // 获取所有目录，排除 Default
+        const { results } = await env.DB.prepare("SELECT id as path, name FROM folders WHERE name != 'Default'").all();
+        return json(results.map(r => ({ ...r, type: "dir" })));
       }
+      // 获取目录下图片
       const { results } = await env.DB.prepare("SELECT id, name, created_at as meta FROM images WHERE folder_id = ?").bind(folderId).all();
-      return json(results || []);
+      return json(results.map(r => ({ ...r, type: "file", path: r.id.toString() })));
     }
 
+    // 上传 API
     if (url.pathname === "/api/upload") {
-      const folderId = url.searchParams.get("folderId");
+      const folderId = url.searchParams.get("path");
       const name = url.searchParams.get("name") || "untitled.jpg";
       const base64 = await request.text();
-      // 获取 MIME 类型（简单处理）
       const mime = name.endsWith(".png") ? "image/png" : (name.endsWith(".gif") ? "image/gif" : "image/jpeg");
       
       await env.DB.prepare("INSERT INTO images (folder_id, name, data, mime_type, created_at) VALUES (?, ?, ?, ?, ?)").bind(folderId, name, base64, mime, Date.now()).run();
       return json({ ok: 1 });
     }
 
+    // 删除 API
     if (url.pathname === "/api/delete") {
       const id = await request.text();
       await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(id).run();
       return json({ ok: 1 });
     }
 
+    // 新建目录
     if (url.pathname === "/api/mkdir") {
       const name = await request.text();
       await env.DB.prepare("INSERT INTO folders (name) VALUES (?)").bind(name).run();
       return json({ ok: 1 });
     }
 
-    /* ================= 4. 前端界面 ================= */
+    /* ================= 4. 前端界面 (原始 UI 设计) ================= */
     if (url.pathname === "/") {
       return html(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>D1 图库管理</title>
+<title>图库管理后台</title>
 <style>
   body { font-family: -apple-system, sans-serif; background: #f4f7f9; margin: 0; padding: 0; color: #333; }
   header { background: #1f2937; color: #fff; padding: 12px; text-align: center; font-weight: bold; position: sticky; top: 0; z-index: 10; }
   main { max-width: 1400px; margin: 0 auto; padding: 10px; }
   .toolbar { display: flex; justify-content: center; gap: 8px; margin-bottom: 15px; }
   button { padding: 8px 14px; border: none; background: #2563eb; color: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
-  .dir-bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+  .dir-bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #ddd; }
   .dir-bar span { padding: 6px 14px; background: #fff; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; font-size: 13px; }
   .dir-bar span.active { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: bold; }
+  
+  /* 移动端 5 列布局 - 完全保留原始设计 */
   .img-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
-  @media (min-width: 601px) { .img-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; } }
-  .card { background: #fff; border-radius: 4px; border: 1px solid #e5e7eb; overflow: hidden; }
-  .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; }
+  .card .name { display: none; }
+  .card .info { padding: 4px 2px; text-align: center; }
+  .card .info button { padding: 2px 4px; font-size: 9px; min-width: 0; }
+
+  /* 桌面端密集布局 - 完全保留原始设计 */
+  @media (min-width: 601px) {
+    .img-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+    .card .name { display: block; font-size: 10px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
+    .card .info { padding: 6px; }
+    .card .info button { padding: 4px 8px; font-size: 12px; }
+  }
+
+  .card { background: #fff; border-radius: 4px; overflow: hidden; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); transition: 0.2s; }
+  .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; position: relative; }
   .img-box img { width: 100%; height: 100%; object-fit: cover; }
-  .info { padding: 6px; text-align: center; }
-  .name { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; }
   #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; }
   #modal img { max-width: 98%; max-height: 98%; }
-  .empty-tip { text-align: center; color: #999; margin-top: 50px; grid-column: 1/-1; }
 </style>
 </head>
 <body>
-<header>D1 图库后台</header>
+<header>图库管理后台</header>
 <main>
   <div class="toolbar">
     <button onclick="mkdir()">新建目录</button>
@@ -131,65 +147,65 @@ export default {
 <div id="modal" onclick="this.style.display='none'"><img id="modalImg"></div>
 
 <script>
-  let curFolderId = null; 
+  let curPath = ""; 
   let sortMode = "time";
 
   async function loadDirs() {
-    const allDirs = await fetch("/api/list").then(r => r.json());
-    const dirs = allDirs.filter(d => d.name !== 'Default');
+    const data = await fetch("/api/list?path=&t=" + Date.now()).then(r => r.json());
+    const dirs = data; // 已经在后端过滤了 Default
     const bar = document.getElementById("dirBar");
     bar.innerHTML = "";
 
-    if (dirs.length === 0) {
-      bar.innerHTML = "<p style='color:#999;font-size:13px'>暂无子目录</p>";
-      document.getElementById("imgGrid").innerHTML = "<div class='empty-tip'>请先创建子目录</div>";
-      return;
+    if (dirs.length > 0) {
+      dirs.forEach((d, index) => {
+        const s = document.createElement("span");
+        s.textContent = d.name;
+        // 自动选中第一个
+        if(curPath === "" && index === 0) { curPath = d.path; s.className = "active"; }
+        else if(curPath == d.path) { s.className = "active"; }
+        s.onclick = () => { 
+          curPath = d.path; 
+          Array.from(bar.children).forEach(c => c.classList.remove('active'));
+          s.classList.add('active'); 
+          loadImages(); 
+        };
+        bar.appendChild(s);
+      });
     }
 
-    if (curFolderId === null) curFolderId = dirs[0].id;
-
-    dirs.forEach((d) => {
-      const s = document.createElement("span");
-      s.textContent = d.name;
-      if(curFolderId == d.id) s.className = "active";
-      s.onclick = () => { 
-        curFolderId = d.id; 
-        Array.from(bar.children).forEach(c => c.classList?.remove('active'));
-        s.classList.add('active'); 
-        loadImages(); 
-      };
-      bar.appendChild(s);
-    });
-    loadImages();
+    if(curPath) loadImages();
   }
 
   async function loadImages() {
-    if (!curFolderId) return;
     const grid = document.getElementById("imgGrid");
     grid.style.opacity = "0.5";
+    const data = await fetch(\`/api/list?path=\${encodeURIComponent(curPath)}&t=\${Date.now()}\`).then(r => r.json());
+    let files = data;
     
-    let files = await fetch("/api/list?folderId=" + curFolderId).then(r => r.json());
-    if (sortMode === "time") files.sort((a, b) => b.meta - a.meta);
-    else files.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortMode === "time") {
+      files.sort((a, b) => {
+        const valA = Number(a.meta) || 1;
+        const valB = Number(b.meta) || 1;
+        return valB - valA;
+      });
+    } else {
+      files.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase(), "en"));
+    }
 
     grid.innerHTML = "";
-    if (files.length === 0) {
-      grid.innerHTML = "<div class='empty-tip'>目录为空</div>";
-    } else {
-      files.forEach(f => {
-        // 关键改动：生成的直链包含 ID 和 文件名
-        const shareUrl = window.location.origin + "/i/" + f.id + "/" + encodeURIComponent(f.name);
-        const div = document.createElement("div");
-        div.className = "card";
-        div.innerHTML = \`<div class="img-box" onclick="show('\${shareUrl}')"><img src="\${shareUrl}" loading="lazy"></div>
-          <div class="info">
-            <div class="name" title="\${f.name}">\${f.name}</div>
-            <button onclick="copy('\${shareUrl}')">复制</button>
-            <button style="background:#ef4444;margin-left:4px" onclick="del('\${f.id}')">删除</button>
-          </div>\`;
-        grid.appendChild(div);
-      });
-    }
+    files.forEach(f => {
+      // 直链携带 ID 和 原文件名
+      const shareUrl = window.location.origin + "/i/" + f.path + "/" + encodeURIComponent(f.name);
+      const div = document.createElement("div");
+      div.className = "card";
+      div.innerHTML = \`<div class="img-box" onclick="show('\${shareUrl}')"><img src="\${shareUrl}" loading="lazy"></div>
+        <div class="info">
+          <div class="name">\${f.name}</div>
+          <button onclick="copy('\${shareUrl}')">复制</button>
+          <button style="background:#ef4444;margin-left:4px" onclick="del('\${f.path}')">删除</button>
+        </div>\`;
+      grid.appendChild(div);
+    });
     grid.style.opacity = "1";
   }
 
@@ -200,25 +216,28 @@ export default {
   }
 
   function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
-  function copy(u) { navigator.clipboard.writeText(u); alert("直链已复制"); }
+  function copy(u) { 
+    navigator.clipboard.writeText(u); 
+    alert("直链已复制 (含原文件名)"); 
+  }
   
-  async function del(id) { 
+  async function del(p) { 
     if(confirm("确定删除吗？")) { 
-      await fetch("/api/delete",{method:"POST",body:id}); 
-      loadImages(); 
+      await fetch("/api/delete",{method:"POST",body:p}); 
+      setTimeout(loadImages, 300); 
     } 
   }
 
   async function mkdir() { 
     const n = prompt("目录名称:"); 
-    if(n && n.trim() !== "") { 
-      await fetch("/api/mkdir",{method:"POST",body:n.trim()}); 
+    if(n) { 
+      await fetch("/api/mkdir",{method:"POST",body:n}); 
       loadDirs(); 
     } 
   }
 
   async function upload() {
-    if(!curFolderId) return alert("请先选择一个目录");
+    if(!curPath) return alert("请先选择目录");
     const inp = document.createElement("input"); inp.type="file"; inp.multiple=true; inp.accept="image/*";
     inp.onchange = async () => {
       for(const f of inp.files) {
@@ -227,9 +246,9 @@ export default {
           rd.onload = () => r(rd.result.split(",")[1]); 
           rd.readAsDataURL(f); 
         });
-        await fetch("/api/upload?folderId="+curFolderId+"&name="+encodeURIComponent(f.name), {method:"POST", body:b});
+        await fetch("/api/upload?path="+encodeURIComponent(curPath)+"&name="+encodeURIComponent(f.name), {method:"POST", body:b});
       }
-      loadImages();
+      setTimeout(loadImages, 500);
     };
     inp.click();
   }
