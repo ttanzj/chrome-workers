@@ -134,8 +134,8 @@ function parseTables(text) {
         i++;
       }
 
-      // 调整：width: auto 且 max-width: 100% 确保表格自适应
-      let html = `<table style="border-collapse:collapse;width:auto;max-width:100%;margin:8px 0;background:#fff;display:table;">`;
+      // 表格样式调整：width:auto 配合 max-width:100% 实现自适应且不超标
+      let html = `<table style="border-collapse:collapse;width:auto;max-width:100%;margin:0.8em 0 0.03em 0;background:#fff;display:table;">`;
       const parseRow = (row) => row.split('|').filter((c, idx, arr) => (idx !== 0 && idx !== arr.length - 1) || c.trim());
       
       html += `<thead><tr>`;
@@ -164,8 +164,6 @@ function parseTables(text) {
 /* ================= Markdown 核心解析 ================= */
 function md(t) {
   let content = escape(t);
-
-  // 1. 处理转义反斜杠 (匹配常见符号及其 HTML 转义后的实体)
   content = content.replace(/\\([*#_>`[\]()!|~-]|&[a-z0-9#]+;)/gi, '%%ESC_$1%%');
 
   const codes = [];
@@ -177,16 +175,16 @@ function md(t) {
   content = parseTables(content);
 
   content = content
-    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:12px 0;">')
-    .replace(/^###### (.*$)/gm, '<h6 style="margin:4px 0 2px 0;">$1</h6>')
-    .replace(/^##### (.*$)/gm, '<h5 style="margin:5px 0 2px 0;">$1</h5>')
-    .replace(/^#### (.*$)/gm, '<h4 style="margin:6px 0 3px 0;">$1</h4>')
-    .replace(/^### (.*$)/gm, '<h3 style="margin:8px 0 4px 0;">$1</h3>')
-    .replace(/^## (.*$)/gm, '<h2 style="margin:10px 0 5px 0;">$1</h2>')
-    .replace(/^# (.*$)/gm, '<h1 style="margin:12px 0 7px 0;">$1</h1>')
-    .replace(/^&gt;[ ]?(.*$)/gm, '<blockquote style="border-left:4px solid #ddd;padding:2px 12px;color:#666;margin:6px 0;background:#f9f9f9;">$1</blockquote>')
-    .replace(/^\* (.*$)/gm, '<ul style="margin:2px 0;"><li style="margin:0;">$1</li></ul>')
-    .replace(/^- (.*$)/gm, '<ul style="margin:2px 0;"><li style="margin:0;">$1</li></ul>')
+    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:1.2em 0;">')
+    .replace(/^###### (.*$)/gm, '<h6>$1</h6>')
+    .replace(/^##### (.*$)/gm, '<h5>$1</h5>')
+    .replace(/^#### (.*$)/gm, '<h4>$1</h4>')
+    .replace(/^### (.*$)/gm, '<h3>$1</h3>')
+    .replace(/^## (.*$)/gm, '<h2>$1</h2>')
+    .replace(/^# (.*$)/gm, '<h1>$1</h1>')
+    .replace(/^&gt;[ ]?(.*$)/gm, '<blockquote>$1</blockquote>')
+    .replace(/^\* (.*$)/gm, '<ul><li>$1</li></ul>')
+    .replace(/^- (.*$)/gm, '<ul><li>$1</li></ul>')
     .replace(/<\/ul>\n<ul>/g, '');
 
   content = content
@@ -199,10 +197,7 @@ function md(t) {
     .replace(/`(.*?)`/g, '<code>$1</code>');
 
   content = content.replace(/\n/g, "<br>").replace(/&lt;br&gt;/g, "<br>");
-
   content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}</code></pre>`);
-  
-  // 还原转义符
   content = content.replace(/%%ESC_(.*?)%%/g, '$1');
   
   return content;
@@ -213,44 +208,39 @@ function baseStyle() {
   return `
 <style>
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
-body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.4; }
+body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
 
-.view-content { 
-  min-height: 450px; 
-  word-wrap: break-word; 
-  font-size: 15.5px; 
-}
-/* 调整间距：上间距保留，下间距缩小到约 0.08em (原 0.25em 的三分之一) */
-/* 并增加首行缩进 2em */
-.view-content br + br { display: block; content: ""; margin-top: 0.5em; }
-.view-content p, .view-content div { 
-  margin-top: 0.25em; 
-  margin-bottom: 0.08em; 
-  text-indent: 2em; 
-}
-/* 针对引用块内部也应用缩进 */
-.view-content blockquote { 
-  border-left: 4px solid #ddd; 
-  padding: 2px 12px; 
-  color: #666; 
-  margin: 6px 0; 
-  background: #f9f9f9; 
-  text-indent: 2em;
-}
-/* 列表不缩进 */
-.view-content li { margin: 0.1em 0; text-indent: 0; }
-.view-content h1, .view-content h2, .view-content h3, .view-content h4 { 
-  margin-top: 0.7em; 
-  margin-bottom: 0.1em; 
+.view-content { min-height: 450px; word-wrap: break-word; font-size: 15.5px; }
+
+/* 普通行样式：取消缩进，统一极小间距 */
+.view-content p, .view-content div, .view-content br { margin: 0.1em 0; text-indent: 0; }
+
+/* 渲染行样式：上间距大，下间距约为三分之一 */
+.view-content h1, .view-content h2, .view-content h3, 
+.view-content h4, .view-content h5, .view-content h6,
+.view-content blockquote, .view-content table, .view-content pre {
+  margin-top: 0.8em;
+  margin-bottom: 0.03em;
   text-indent: 0;
 }
 
-.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 8px 0; line-height: 1.4; text-indent: 0; }
-.view-content table { margin: 10px 0; border-spacing: 0; display: table; text-indent: 0; }
-.view-content ul, .view-content ol { margin: 0.2em 0 0.2em 25px; padding: 0; text-indent: 0; }
+/* 列表对齐：圆点对齐其他行的起始文字 */
+.view-content ul {
+  margin: 0.4em 0;
+  padding: 0;
+  list-style-position: inside; /* 圆点作为行内内容，直接对齐文字起始位 */
+}
+.view-content li {
+  margin: 0.1em 0;
+}
 
-/* 登录、卡片等其他样式维持不变 */
+.view-content blockquote { border-left: 4px solid #ddd; padding: 4px 12px; color: #666; background: #f9f9f9; }
+.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; }
+.view-content table { border-spacing: 0; border: 1px solid #ddd; }
+.view-content img { max-width: 100%; height: auto; border-radius: 4px; }
+
+/* 其他样式 */
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
@@ -271,7 +261,6 @@ textarea { min-height: 380px; line-height: 1.5; font-family: monospace; resize: 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
 .grid .doc-item { padding: 15px; display: flex; flex-direction: column; text-align: center; }
 .grid .actions { margin-top: auto; padding-top: 12px; display: flex; justify-content: center; gap: 20px; }
-.category-filter { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 15px; }
 .category-btn { padding: 6px 12px; border-radius: 20px; font-size: 13px; background: #fff; border: 1px solid #e2e8f0; text-decoration: none; color: inherit; }
 .category-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
 @media (max-width: 600px) { .container { padding: 10px; } .grid { grid-template-columns: 1fr 1fr; gap: 8px; } textarea { min-height: 300px; font-size: 14px; } }
@@ -303,7 +292,7 @@ function indexPage(docs, categories, currentCategory) {
       <button class="btn-primary" onclick="toggleNew()">+ 新建</button>
     </div>
   </div>
-  <div class="category-filter">
+  <div class="category-filter" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">
     ${allCategories.map(c => {
       const cat = c.category || "";
       const active = cat === currentCategory ? "active" : "";
