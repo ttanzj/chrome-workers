@@ -12,14 +12,17 @@ export default {
     const getDBs = () => [env.DB, env.DB2, env.DB3, env.DB4, env.DB5, env.DB6].filter(Boolean);
     const CHUNK_LIMIT = 1.9 * 1024 * 1024;
 
-    /* ================= 2. 核心路由：带域名无关缓存修复 ================= */
+    /* ================= 2. 核心路由：强制刷新缓存版 ================= */
     if (url.pathname.startsWith("/i/")) {
       const id = url.pathname.split("/")[2];
-
       const isDeleted = await env.INDEX_KV.get(`deleted:${id}`);
       if (isDeleted) return new Response("Not Found", { status: 404 });
 
-      const cacheKey = new Request(new URL(url.pathname, url.origin).toString(), request);
+      // 【核心修复】给 cacheKey 增加版本后缀，彻底绕过旧域名的旧缓存干扰
+      const cacheUrl = new URL(url.pathname, url.origin);
+      cacheUrl.searchParams.set("cv", "2026"); 
+      const cacheKey = new Request(cacheUrl.toString(), request);
+      
       let response = await cache.match(cacheKey);
       if (response) return response;
 
@@ -30,17 +33,22 @@ export default {
         if (metaStr) {
           const meta = JSON.parse(metaStr);
           mime = meta.mime || "image/jpeg";
-          const chunks = [];
           const dbs = getDBs();
-          for (const c of meta.chunks) {
+          // 兼容性读取
+          let targetChunks = meta.chunks || [{ dbIndex: 0, rowId: parseInt(id) }];
+          const chunks = [];
+          for (const c of targetChunks) {
             const data = await dbs[c.dbIndex].prepare("SELECT data FROM images WHERE id = ?").bind(c.rowId).first("data");
             if (data) chunks.push(new Uint8Array(data));
           }
+          
+          if (chunks.length === 0) throw new Error("No data");
           const totalLength = chunks.reduce((acc, curr) => acc + curr.length, 0);
           binary = new Uint8Array(totalLength);
           let offset = 0;
           for (const chunk of chunks) { binary.set(chunk, offset); offset += chunk.length; }
         } else {
+          // KV 没找到时，直接从主数据库暴力打通
           const img = await env.DB.prepare("SELECT data, mime_type FROM images WHERE id = ?").bind(id).first();
           if (!img) return new Response("Not Found", { status: 404 });
           mime = img.mime_type;
@@ -50,12 +58,10 @@ export default {
         const fullResponse = new Response(binary, {
           headers: {
             "Content-Type": mime,
-            "Cache-Control": "public, max-age=2592000, s-maxage=2592000",
-            "Cloudflare-CDN-Cache-Control": "max-age=2592000",
-            "ETag": `"${id}"`
+            "Cache-Control": "public, max-age=2592000",
+            "ETag": `"${id}-v2"`
           }
         });
-        
         ctx.waitUntil(cache.put(cacheKey, fullResponse.clone()));
         return fullResponse;
       } catch (e) { return new Response("Read Error", { status: 500 }); }
@@ -66,7 +72,6 @@ export default {
     }
 
     /* ================= 3. 业务 API ================= */
-
     if (url.pathname === "/api/upload") {
       const folderId = url.searchParams.get("path");
       const name = url.searchParams.get("name");
@@ -82,10 +87,14 @@ export default {
           if (metaStr) {
             const meta = JSON.parse(metaStr);
             const dbs = getDBs();
-            for (const c of meta.chunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
+            const targetChunks = meta.chunks || [];
+            for (const c of targetChunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
           }
           await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(old.id).run();
-          ctx.waitUntil(cache.delete(new Request(new URL(`/i/${old.id}/${encodeURIComponent(name)}`, url.origin).toString())));
+          // 删除缓存
+          const delUrl = new URL(`/i/${old.id}/${encodeURIComponent(name)}`, url.origin);
+          delUrl.searchParams.set("cv", "2026");
+          ctx.waitUntil(cache.delete(new Request(delUrl.toString())));
         }
       }
 
@@ -93,7 +102,6 @@ export default {
       const chunksMeta = [];
       let masterId = null;
       const count = Math.ceil(buffer.byteLength / CHUNK_LIMIT);
-      
       for (let i = 0; i < count; i++) {
         const chunk = buffer.slice(i * CHUNK_LIMIT, (i + 1) * CHUNK_LIMIT);
         const dbIdx = i % dbs.length;
@@ -102,43 +110,31 @@ export default {
         if (i === 0) masterId = info.id; 
         chunksMeta.push({ dbIndex: dbIdx, rowId: info.id });
       }
-      
       await env.INDEX_KV.put(`file:${masterId}`, JSON.stringify({ name, mime, chunks: chunksMeta }));
       await env.INDEX_KV.delete(`list:${folderId}`);
-
-      const imageUrl = new Request(new URL(`/i/${masterId}/${encodeURIComponent(name)}`, url.origin).toString());
-      ctx.waitUntil(cache.put(imageUrl, new Response(buffer, {
-        headers: { "Content-Type": mime, "Cache-Control": "public, max-age=2592000" }
-      })));
-
       return json({ ok: 1, id: masterId });
     }
 
     if (url.pathname === "/api/delete") {
       const id = await request.text();
+      const imgInfo = await env.DB.prepare("SELECT folder_id, name FROM images WHERE id = ?").bind(id).first();
       await env.INDEX_KV.put(`deleted:${id}`, "1", { expirationTtl: 3456000 });
-
       const metaStr = await env.INDEX_KV.get(`file:${id}`);
-      let fileName = "";
+      let fileName = imgInfo ? imgInfo.name : "";
       if (metaStr) {
         const meta = JSON.parse(metaStr);
-        fileName = meta.name;
+        if (!fileName) fileName = meta.name;
         const dbs = getDBs();
-        for (const c of meta.chunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
+        const targetChunks = meta.chunks || [];
+        for (const c of targetChunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
       }
-
-      const imgInfo = await env.DB.prepare("SELECT folder_id, name FROM images WHERE id = ?").bind(id).first();
-      if (imgInfo) {
-        if (!fileName) fileName = imgInfo.name;
-        await env.INDEX_KV.delete(`list:${imgInfo.folder_id}`);
-      }
-
+      if (imgInfo) await env.INDEX_KV.delete(`list:${imgInfo.folder_id}`);
       await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(id).run();
       await env.INDEX_KV.delete(`file:${id}`);
-
       if (fileName) {
-        const cacheKey = new Request(new URL(`/i/${id}/${encodeURIComponent(fileName)}`, url.origin).toString());
-        ctx.waitUntil(cache.delete(cacheKey));
+        const delUrl = new URL(`/i/${id}/${encodeURIComponent(fileName)}`, url.origin);
+        delUrl.searchParams.set("cv", "2026");
+        ctx.waitUntil(cache.delete(new Request(delUrl.toString())));
       }
       return json({ ok: 1 });
     }
@@ -169,16 +165,19 @@ export default {
       return new Response("err", { status: 403 });
     }
 
-    // 【新增】重建索引 API
+    /* 【重建索引：强制重写版】 */
     if (url.pathname === "/api/reindex") {
       const dbs = getDBs();
       let count = 0;
-      for (let i = 0; i < dbs.length; i++) {
-        const { results } = await dbs[i].prepare("SELECT id, name, mime_type FROM images WHERE chunk_index = 0 OR chunk_index IS NULL").all();
-        for (const img of results) {
-          await env.INDEX_KV.put(`file:${img.id}`, JSON.stringify({ name: img.name, mime: img.mime_type, chunks: [{ dbIndex: i, rowId: img.id }] }));
-          count++;
-        }
+      const { results } = await env.DB.prepare("SELECT id, name, mime_type FROM images WHERE chunk_index = 0 OR chunk_index IS NULL").all();
+      for (const img of results) {
+        // 重建逻辑：优先信任 DB 的物理存在，强制刷新 KV
+        await env.INDEX_KV.put(`file:${img.id}`, JSON.stringify({
+          name: img.name,
+          mime: img.mime_type || "image/jpeg",
+          chunks: [{ dbIndex: 0, rowId: img.id }]
+        }));
+        count++;
       }
       return json({ ok: 1, count });
     }
@@ -212,7 +211,6 @@ export default {
   .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
   .info { padding: 4px; }
-  /* 新增文件名样式 */
   .fname { font-size: 9px; color: #888; text-align: center; margin-bottom: 2px; display: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .btn-group { display: flex; gap: 2px; }
   .btn-copy, .btn-del { flex: 1; padding: 6px 0; border: none; border-radius: 3px; color: #fff; font-size: 9px; cursor: pointer; text-align: center; }
@@ -220,7 +218,7 @@ export default {
   .btn-del { background: #ef4444; }
   @media (min-width: 601px) {
     .img-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; }
-    .fname { display: block; } /* 桌面端显示文件名 */
+    .fname { display: block; }
   }
   #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; }
   #modal img { max-width: 98%; max-height: 98%; }
@@ -306,12 +304,11 @@ export default {
   }
   async function mkdir() { const n = prompt("名称:"); if(n) { await fetch("/api/mkdir",{method:"POST",body:n}); loadDirs(); } }
   function toggleSort() { sortMode = (sortMode==="time")?"name":"time"; document.getElementById("sortBtn").textContent=sortMode==="time"?"排序: 时间↓":"排序: 字母"; renderImages(); }
-  async function reindex() { if(confirm("重建索引？")) { const r = await fetch("/api/reindex").then(r=>r.json()); alert("完成, 数量:"+r.count); } }
+  async function reindex() { if(confirm("强制修复所有索引并绕过旧缓存？")) { const r = await fetch("/api/reindex").then(r=>r.json()); alert("修复完成, 数量:"+r.count); fetchImages(); } }
   loadDirs();
 </script>
 </body></html>`);
     }
-
     return new Response("Not Found", { status: 404 });
   }
 };
