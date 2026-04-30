@@ -1,20 +1,24 @@
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const cache = caches.default;
 
-    /* ================= 1. 基础配置 ================= */
+    /* ================= 1. 基础工具 ================= */
     const isAuthed = (req) => (req.headers.get("cookie") || "").includes("gallery_auth=1");
     const json = (data) => new Response(JSON.stringify(data), {
-      headers: { "content-type": "application/json;charset=UTF-8", "Cache-Control": "no-store" }
+      headers: { "content-type": "application/json;charset=UTF-8" }
     });
     const html = (body) => new Response(body, { headers: { "content-type": "text/html;charset=UTF-8" } });
     const getDBs = () => [env.DB, env.DB2, env.DB3, env.DB4, env.DB5, env.DB6].filter(Boolean);
     const CHUNK_LIMIT = 1.9 * 1024 * 1024;
 
-    /* ================= 2. 极速读取路由 (已修复预览) ================= */
+    /* ================= 2. 核心路由：带墓碑机制的读取 ================= */
     if (url.pathname.startsWith("/i/")) {
       const id = url.pathname.split("/")[2];
-      const cache = caches.default;
+
+      const isDeleted = await env.INDEX_KV.get(`deleted:${id}`);
+      if (isDeleted) return new Response("Not Found", { status: 404 });
+
       let response = await cache.match(request);
       if (response) return response;
 
@@ -42,9 +46,16 @@ export default {
           binary = new Uint8Array(img.data);
         }
 
-        response = new Response(binary, { headers: { "Content-Type": mime, "Cache-Control": "public, max-age=2592000" } });
-        ctx.waitUntil(cache.put(request, response.clone()));
-        return response;
+        const fullResponse = new Response(binary, {
+          headers: {
+            "Content-Type": mime,
+            "Cache-Control": "public, max-age=2592000, s-maxage=2592000",
+            "Cloudflare-CDN-Cache-Control": "max-age=2592000"
+          }
+        });
+        
+        ctx.waitUntil(cache.put(request, fullResponse.clone()));
+        return fullResponse;
       } catch (e) { return new Response("Read Error", { status: 500 }); }
     }
 
@@ -52,43 +63,8 @@ export default {
       return Response.redirect(url.origin + "/login", 302);
     }
 
-    /* ================= 3. 业务 API (逻辑找回与提速) ================= */
+    /* ================= 3. 业务 API ================= */
 
-    // 列表提速
-    if (url.pathname === "/api/list") {
-      const folderId = url.searchParams.get("path");
-      if (!folderId) {
-        const { results } = await env.DB.prepare("SELECT id as path, name FROM folders WHERE name != 'Default' AND name != '_cf_KV'").all();
-        return json(results.map(r => ({ ...r, type: "dir" })));
-      }
-      
-      const cachedList = await env.INDEX_KV.get(`list:${folderId}`);
-      if (cachedList) return new Response(cachedList, { headers: { "Content-Type": "application/json" } });
-
-      const { results } = await env.DB.prepare("SELECT id, name, created_at as meta FROM images WHERE folder_id = ? AND (chunk_index = 0 OR chunk_index IS NULL)").bind(folderId).all();
-      const list = results.map(r => ({ ...r, type: "file", path: r.id.toString() }));
-      ctx.waitUntil(env.INDEX_KV.put(`list:${folderId}`, JSON.stringify(list), { expirationTtl: 3600 }));
-      return json(list);
-    }
-
-    // 新建目录接口 (修复点)
-    if (url.pathname === "/api/mkdir") {
-      const name = await request.text();
-      if (!name) return json({ ok: 0 });
-      await env.DB.prepare("INSERT INTO folders (name) VALUES (?)").bind(name).run();
-      await env.INDEX_KV.delete("list:"); // 清除目录列表缓存
-      return json({ ok: 1 });
-    }
-
-    // 重名检测
-    if (url.pathname === "/api/check-exist") {
-      const folderId = url.searchParams.get("folderId");
-      const name = url.searchParams.get("name");
-      const exist = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ? AND (chunk_index = 0 OR chunk_index IS NULL)").bind(folderId, name).first();
-      return json({ exists: !!exist, id: exist ? exist.id : null });
-    }
-
-    // 覆盖上传逻辑
     if (url.pathname === "/api/upload") {
       const folderId = url.searchParams.get("path");
       const name = url.searchParams.get("name");
@@ -99,6 +75,7 @@ export default {
       if (mode === "overwrite") {
         const old = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ?").bind(folderId, name).first();
         if (old) {
+          await env.INDEX_KV.delete(`deleted:${old.id}`);
           const metaStr = await env.INDEX_KV.get(`file:${old.id}`);
           if (metaStr) {
             const meta = JSON.parse(metaStr);
@@ -106,6 +83,7 @@ export default {
             for (const c of meta.chunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
           }
           await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(old.id).run();
+          ctx.waitUntil(cache.delete(`${url.origin}/i/${old.id}/${encodeURIComponent(name)}`));
         }
       }
 
@@ -125,16 +103,65 @@ export default {
       
       await env.INDEX_KV.put(`file:${masterId}`, JSON.stringify({ name, mime, chunks: chunksMeta }));
       await env.INDEX_KV.delete(`list:${folderId}`);
+
+      const imageUrl = `${url.origin}/i/${masterId}/${encodeURIComponent(name)}`;
+      ctx.waitUntil(cache.put(imageUrl, new Response(buffer, {
+        headers: { "Content-Type": mime, "Cache-Control": "public, max-age=2592000" }
+      })));
+
       return json({ ok: 1, id: masterId });
     }
 
     if (url.pathname === "/api/delete") {
       const id = await request.text();
-      const folderRes = await env.DB.prepare("SELECT folder_id FROM images WHERE id = ?").bind(id).first();
+      // 写入墓碑
+      await env.INDEX_KV.put(`deleted:${id}`, "1", { expirationTtl: 3456000 });
+
+      const metaStr = await env.INDEX_KV.get(`file:${id}`);
+      let fileName = "";
+      if (metaStr) {
+        const meta = JSON.parse(metaStr);
+        fileName = meta.name;
+        const dbs = getDBs();
+        for (const c of meta.chunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
+      }
+
+      const imgInfo = await env.DB.prepare("SELECT folder_id, name FROM images WHERE id = ?").bind(id).first();
+      if (imgInfo) {
+        if (!fileName) fileName = imgInfo.name;
+        // 【修复】显式删除列表缓存，确保刷新后列表同步
+        await env.INDEX_KV.delete(`list:${imgInfo.folder_id}`);
+      }
+
       await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(id).run();
       await env.INDEX_KV.delete(`file:${id}`);
-      if (folderRes) await env.INDEX_KV.delete(`list:${folderRes.folder_id}`);
+
+      if (fileName) {
+        const imageUrl = `${url.origin}/i/${id}/${encodeURIComponent(fileName)}`;
+        ctx.waitUntil(cache.delete(imageUrl));
+      }
       return json({ ok: 1 });
+    }
+
+    if (url.pathname === "/api/mkdir") {
+      const name = await request.text();
+      await env.DB.prepare("INSERT INTO folders (name) VALUES (?)").bind(name).run();
+      await env.INDEX_KV.delete("list:");
+      return json({ ok: 1 });
+    }
+    
+    if (url.pathname === "/api/list") {
+      const folderId = url.searchParams.get("path");
+      if (!folderId) {
+        const { results } = await env.DB.prepare("SELECT id as path, name FROM folders WHERE name != 'Default' AND name != '_cf_KV'").all();
+        return json(results.map(r => ({ ...r, type: "dir" })));
+      }
+      const cachedList = await env.INDEX_KV.get(`list:${folderId}`);
+      if (cachedList) return new Response(cachedList, { headers: { "Content-Type": "application/json" } });
+      const { results } = await env.DB.prepare("SELECT id, name, created_at as meta FROM images WHERE folder_id = ? AND (chunk_index = 0 OR chunk_index IS NULL)").bind(folderId).all();
+      const list = results.map(r => ({ ...r, type: "file", path: r.id.toString() }));
+      ctx.waitUntil(env.INDEX_KV.put(`list:${folderId}`, JSON.stringify(list), { expirationTtl: 3600 }));
+      return json(list);
     }
 
     if (url.pathname === "/api/login" && request.method === "POST") {
@@ -142,16 +169,14 @@ export default {
       return new Response("err", { status: 403 });
     }
 
-    if (url.pathname === "/api/admin/rebuild-index") {
-      const { results } = await env.DB.prepare("SELECT id, name, folder_id, mime_type FROM images WHERE chunk_index IS NULL").all();
-      for (const f of results) {
-        await env.INDEX_KV.put(`file:${f.id}`, JSON.stringify({ name: f.name, mime: f.mime_type || "image/jpeg", chunks: [{ dbIndex: 0, rowId: f.id }] }));
-      }
-      await env.DB.prepare("UPDATE images SET chunk_index = 0 WHERE chunk_index IS NULL").run();
-      return json({ ok: 1 });
+    if (url.pathname === "/api/check-exist") {
+      const folderId = url.searchParams.get("folderId");
+      const name = url.searchParams.get("name");
+      const exist = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ? AND (chunk_index = 0 OR chunk_index IS NULL)").bind(folderId, name).first();
+      return json({ exists: !!exist, id: exist ? exist.id : null });
     }
 
-    /* ================= 4. 前端界面 (UI 绝对原版) ================= */
+    /* ================= 4. 前端界面 ================= */
     if (url.pathname === "/") {
       return html(`<!DOCTYPE html>
 <html lang="zh-CN">
@@ -173,14 +198,12 @@ export default {
   .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
   .info { padding: 4px; }
-  .info .name { display: none; }
   .btn-group { display: flex; gap: 2px; }
   .btn-copy, .btn-del { flex: 1; padding: 6px 0; border: none; border-radius: 3px; color: #fff; font-size: 9px; cursor: pointer; text-align: center; }
   .btn-copy { background: #2563eb; }
   .btn-del { background: #ef4444; }
   @media (min-width: 601px) {
     .img-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; }
-    .info .name { display: block; font-size: 10px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; text-align: center; }
   }
   #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; }
   #modal img { max-width: 98%; max-height: 98%; }
@@ -193,7 +216,6 @@ export default {
     <button onclick="mkdir()">新建目录</button>
     <button onclick="upload()">上传图片</button>
     <button id="sortBtn" style="background:#4b5563" onclick="toggleSort()">排序: 时间↓</button>
-    <button style="background:#dc2626" onclick="rebuild()">更新索引</button>
   </div>
   <div id="dirBar" class="dir-bar"></div>
   <div id="imgGrid" class="img-grid"></div>
@@ -201,6 +223,7 @@ export default {
 <div id="modal" onclick="this.style.display='none'"><img id="modalImg"></div>
 <script>
   let curPath = "", sortMode = "time", cachedFiles = []; 
+  
   async function loadDirs() {
     const data = await fetch("/api/list?path=").then(r => r.json());
     const bar = document.getElementById("dirBar"); bar.innerHTML = "";
@@ -213,11 +236,13 @@ export default {
     });
     if(curPath) fetchImages();
   }
+
   async function fetchImages() {
     const grid = document.getElementById("imgGrid"); grid.style.opacity = "0.5";
     const data = await fetch("/api/list?path=" + encodeURIComponent(curPath)).then(r => r.json());
     cachedFiles = data; renderImages();
   }
+
   function renderImages() {
     const grid = document.getElementById("imgGrid");
     let files = [...cachedFiles];
@@ -228,49 +253,47 @@ export default {
       const url = window.location.origin + "/i/" + f.path + "/" + encodeURIComponent(f.name);
       const div = document.createElement("div"); div.className = "card";
       div.innerHTML = \`<div class="img-box" onclick="show('\${url}')"><img src="\${url}" loading="lazy"></div>
-        <div class="info"><div class="name">\${f.name}</div><div class="btn-group">
+        <div class="info"><div class="btn-group">
         <button class="btn-copy" onclick="copy('\${url}')">复制</button>
         <button class="btn-del" onclick="del('\${f.path}')">删除</button></div></div>\`;
       grid.appendChild(div);
     });
     grid.style.opacity = "1";
   }
-  async function rebuild() { if(confirm("更新旧索引？")) { await fetch("/api/admin/rebuild-index"); location.reload(); } }
-  function toggleSort() { sortMode = (sortMode==="time")?"name":"time"; document.getElementById("sortBtn").textContent=sortMode==="time"?"排序: 时间↓":"排序: 字母"; renderImages(); }
-  function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
-  function copy(u) { navigator.clipboard.writeText(u); alert("已复制"); }
-  async function del(p) { if(confirm("确定删除？")) { await fetch("/api/delete",{method:"POST",body:p}); fetchImages(); } }
-  
-  // 修复后的新建目录函数
-  async function mkdir() { 
-    const n = prompt("名称:"); 
-    if(n) { 
-      const res = await fetch("/api/mkdir", {method:"POST", body:n}); 
-      if(res.ok) {
-        curPath = ""; // 重置路径以便重新加载根列表
-        await loadDirs(); 
-      } else {
-        alert("创建失败");
-      }
-    } 
-  }
-  
+
   async function upload() {
     const inp = document.createElement("input"); inp.type="file"; inp.multiple=true;
     inp.onchange = async () => {
       for(const f of inp.files) {
         const check = await fetch(\`/api/check-exist?folderId=\${curPath}&name=\${encodeURIComponent(f.name)}\`).then(r=>r.json());
         let mode = "";
-        if (check.exists) {
-          if (!confirm(\`文件 "\${f.name}" 已存在。覆盖吗？\`)) continue;
-          mode = "overwrite";
-        }
+        if (check.exists && !confirm(\`文件 "\${f.name}" 已存在。覆盖吗？\`)) continue;
+        if (check.exists) mode = "overwrite";
         const buf = await f.arrayBuffer();
         await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(f.name)}&mode=\${mode}\`, {method:"POST", body:buf});
       }
       fetchImages();
     }; inp.click();
   }
+
+  function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
+  function copy(u) { navigator.clipboard.writeText(u); alert("已复制"); }
+  
+  // 【修复】删除后立即更新 UI，解决位置还在的问题
+  async function del(p) { 
+    if(confirm("确定删除？")) { 
+      const res = await fetch("/api/delete",{method:"POST",body:p}).then(r => r.json());
+      if(res.ok) {
+        // 核心：立即从前端缓存中移除该项并重绘
+        cachedFiles = cachedFiles.filter(f => f.path !== p);
+        renderImages();
+      }
+    } 
+  }
+  
+  async function mkdir() { const n = prompt("名称:"); if(n) { await fetch("/api/mkdir",{method:"POST",body:n}); loadDirs(); } }
+  function toggleSort() { sortMode = (sortMode==="time")?"name":"time"; document.getElementById("sortBtn").textContent=sortMode==="time"?"排序: 时间↓":"排序: 字母"; renderImages(); }
+  
   loadDirs();
 </script>
 </body></html>`);
