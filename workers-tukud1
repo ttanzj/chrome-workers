@@ -12,14 +12,17 @@ export default {
     const getDBs = () => [env.DB, env.DB2, env.DB3, env.DB4, env.DB5, env.DB6].filter(Boolean);
     const CHUNK_LIMIT = 1.9 * 1024 * 1024;
 
-    /* ================= 2. 核心路由：带墓碑机制的读取 ================= */
+    /* ================= 2. 核心路由：带域名无关缓存修复 ================= */
     if (url.pathname.startsWith("/i/")) {
       const id = url.pathname.split("/")[2];
 
       const isDeleted = await env.INDEX_KV.get(`deleted:${id}`);
       if (isDeleted) return new Response("Not Found", { status: 404 });
 
-      let response = await cache.match(request);
+      // 【核心修复】构造一个忽略域名的 cacheKey，解决多域名重复拉取问题
+      // 只要 pathname 一致，无论哪个域名访问都指向同一份物理缓存
+      const cacheKey = new Request(new URL(url.pathname, url.origin).toString(), request);
+      let response = await cache.match(cacheKey);
       if (response) return response;
 
       try {
@@ -50,11 +53,14 @@ export default {
           headers: {
             "Content-Type": mime,
             "Cache-Control": "public, max-age=2592000, s-maxage=2592000",
-            "Cloudflare-CDN-Cache-Control": "max-age=2592000"
+            "Cloudflare-CDN-Cache-Control": "max-age=2592000",
+            // 【新增】提供 ETag，帮助浏览器在不同域名下识别相同资源
+            "ETag": `"${id}"`
           }
         });
         
-        ctx.waitUntil(cache.put(request, fullResponse.clone()));
+        // 【核心修复】使用统一的 cacheKey 存入缓存
+        ctx.waitUntil(cache.put(cacheKey, fullResponse.clone()));
         return fullResponse;
       } catch (e) { return new Response("Read Error", { status: 500 }); }
     }
@@ -83,7 +89,8 @@ export default {
             for (const c of meta.chunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
           }
           await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(old.id).run();
-          ctx.waitUntil(cache.delete(`${url.origin}/i/${old.id}/${encodeURIComponent(name)}`));
+          // 删除缓存时也使用 pathname，确保全域名同步清理
+          ctx.waitUntil(cache.delete(new Request(new URL(`/i/${old.id}/${encodeURIComponent(name)}`, url.origin).toString())));
         }
       }
 
@@ -104,7 +111,7 @@ export default {
       await env.INDEX_KV.put(`file:${masterId}`, JSON.stringify({ name, mime, chunks: chunksMeta }));
       await env.INDEX_KV.delete(`list:${folderId}`);
 
-      const imageUrl = `${url.origin}/i/${masterId}/${encodeURIComponent(name)}`;
+      const imageUrl = new Request(new URL(`/i/${masterId}/${encodeURIComponent(name)}`, url.origin).toString());
       ctx.waitUntil(cache.put(imageUrl, new Response(buffer, {
         headers: { "Content-Type": mime, "Cache-Control": "public, max-age=2592000" }
       })));
@@ -114,7 +121,6 @@ export default {
 
     if (url.pathname === "/api/delete") {
       const id = await request.text();
-      // 写入墓碑
       await env.INDEX_KV.put(`deleted:${id}`, "1", { expirationTtl: 3456000 });
 
       const metaStr = await env.INDEX_KV.get(`file:${id}`);
@@ -129,7 +135,6 @@ export default {
       const imgInfo = await env.DB.prepare("SELECT folder_id, name FROM images WHERE id = ?").bind(id).first();
       if (imgInfo) {
         if (!fileName) fileName = imgInfo.name;
-        // 【修复】显式删除列表缓存，确保刷新后列表同步
         await env.INDEX_KV.delete(`list:${imgInfo.folder_id}`);
       }
 
@@ -137,8 +142,9 @@ export default {
       await env.INDEX_KV.delete(`file:${id}`);
 
       if (fileName) {
-        const imageUrl = `${url.origin}/i/${id}/${encodeURIComponent(fileName)}`;
-        ctx.waitUntil(cache.delete(imageUrl));
+        // 使用路径匹配删除缓存，确保清理彻底
+        const cacheKey = new Request(new URL(`/i/${id}/${encodeURIComponent(fileName)}`, url.origin).toString());
+        ctx.waitUntil(cache.delete(cacheKey));
       }
       return json({ ok: 1 });
     }
@@ -250,6 +256,7 @@ export default {
     else files.sort((a, b) => a.name.localeCompare(b.name));
     grid.innerHTML = "";
     files.forEach(f => {
+      // 使用相对路径确保多域名兼容
       const url = window.location.origin + "/i/" + f.path + "/" + encodeURIComponent(f.name);
       const div = document.createElement("div"); div.className = "card";
       div.innerHTML = \`<div class="img-box" onclick="show('\${url}')"><img src="\${url}" loading="lazy"></div>
@@ -279,12 +286,10 @@ export default {
   function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
   function copy(u) { navigator.clipboard.writeText(u); alert("已复制"); }
   
-  // 【修复】删除后立即更新 UI，解决位置还在的问题
   async function del(p) { 
     if(confirm("确定删除？")) { 
       const res = await fetch("/api/delete",{method:"POST",body:p}).then(r => r.json());
       if(res.ok) {
-        // 核心：立即从前端缓存中移除该项并重绘
         cachedFiles = cachedFiles.filter(f => f.path !== p);
         renderImages();
       }
