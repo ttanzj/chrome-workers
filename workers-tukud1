@@ -2,105 +2,156 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    /* ================= 1. 基础工具 ================= */
+    /* ================= 1. 基础配置 ================= */
     const isAuthed = (req) => (req.headers.get("cookie") || "").includes("gallery_auth=1");
-    
     const json = (data) => new Response(JSON.stringify(data), {
-      headers: { 
-        "content-type": "application/json;charset=UTF-8",
-        "Cache-Control": "no-store, no-cache, must-revalidate" 
-      }
+      headers: { "content-type": "application/json;charset=UTF-8", "Cache-Control": "no-store" }
     });
+    const html = (body) => new Response(body, { headers: { "content-type": "text/html;charset=UTF-8" } });
+    const getDBs = () => [env.DB, env.DB2, env.DB3, env.DB4, env.DB5, env.DB6].filter(Boolean);
+    const CHUNK_LIMIT = 1.9 * 1024 * 1024;
 
-    const html = (body) => new Response(body, { 
-      headers: { "content-type": "text/html;charset=UTF-8" } 
-    });
-
-    /* ================= 2. 核心路由与 D1 通讯 ================= */
-
+    /* ================= 2. 极速读取路由 (已修复预览) ================= */
     if (url.pathname.startsWith("/i/")) {
-      const parts = url.pathname.split("/");
-      const id = parts[2]; 
+      const id = url.pathname.split("/")[2];
+      const cache = caches.default;
+      let response = await cache.match(request);
+      if (response) return response;
+
       try {
-        const img = await env.DB.prepare("SELECT data, mime_type, name FROM images WHERE id = ?").bind(id).first();
-        if (!img) return new Response("Not Found", { status: 404 });
-        const binary = Uint8Array.from(atob(img.data), c => c.charCodeAt(0));
-        return new Response(binary, {
-          headers: {
-            "Content-Type": img.mime_type || "image/jpeg",
-            "Cache-Control": "public, max-age=2592000",
-            "Content-Disposition": `inline; filename="${encodeURIComponent(img.name)}"`
+        const metaStr = await env.INDEX_KV.get(`file:${id}`);
+        let binary, mime = "image/jpeg";
+
+        if (metaStr) {
+          const meta = JSON.parse(metaStr);
+          mime = meta.mime || "image/jpeg";
+          const chunks = [];
+          const dbs = getDBs();
+          for (const c of meta.chunks) {
+            const data = await dbs[c.dbIndex].prepare("SELECT data FROM images WHERE id = ?").bind(c.rowId).first("data");
+            if (data) chunks.push(new Uint8Array(data));
           }
-        });
-      } catch (e) { return new Response("Error", { status: 500 }); }
+          const totalLength = chunks.reduce((acc, curr) => acc + curr.length, 0);
+          binary = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) { binary.set(chunk, offset); offset += chunk.length; }
+        } else {
+          const img = await env.DB.prepare("SELECT data, mime_type FROM images WHERE id = ?").bind(id).first();
+          if (!img) return new Response("Not Found", { status: 404 });
+          mime = img.mime_type;
+          binary = new Uint8Array(img.data);
+        }
+
+        response = new Response(binary, { headers: { "Content-Type": mime, "Cache-Control": "public, max-age=2592000" } });
+        ctx.waitUntil(cache.put(request, response.clone()));
+        return response;
+      } catch (e) { return new Response("Read Error", { status: 500 }); }
     }
 
-    if (url.pathname === "/login") {
-      return html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>登录</title><style>body{font-family:sans-serif;background:#f3f4f6;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.box{background:#fff;padding:30px;border-radius:12px;text-align:center;width:280px}input{width:100%;padding:10px;margin:15px 0;border:1px solid #ddd;border-radius:6px;box-sizing:border-box}button{width:100%;padding:10px;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer}</style></head><body><div class="box"><h3>图库管理登录</h3><input id="p" type="password" placeholder="密码"><button onclick="login()">进入</button></div><script>async function login(){const r=await fetch("/api/login",{method:"POST",body:document.getElementById("p").value});if(r.ok)location="/";else alert("密码错误")}<\/script></body></html>`);
+    if (!isAuthed(request) && !url.pathname.startsWith("/api/login") && url.pathname !== "/login") {
+      return Response.redirect(url.origin + "/login", 302);
     }
 
-    if (url.pathname === "/api/login" && request.method === "POST") {
-      if (await request.text() === env.GALLERY_PASSWORD) {
-        return new Response("ok", { headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" } });
-      }
-      return new Response("err", { status: 403 });
-    }
+    /* ================= 3. 业务 API (逻辑找回与提速) ================= */
 
-    if (!isAuthed(request)) return Response.redirect(url.origin + "/login", 302);
-
-    /* ================= 3. 业务 API ================= */
-
+    // 列表提速
     if (url.pathname === "/api/list") {
       const folderId = url.searchParams.get("path");
       if (!folderId) {
-        const { results } = await env.DB.prepare("SELECT id as path, name FROM folders WHERE name != 'Default'").all();
+        const { results } = await env.DB.prepare("SELECT id as path, name FROM folders WHERE name != 'Default' AND name != '_cf_KV'").all();
         return json(results.map(r => ({ ...r, type: "dir" })));
       }
-      const { results } = await env.DB.prepare("SELECT id, name, created_at as meta FROM images WHERE folder_id = ?").bind(folderId).all();
-      return json(results.map(r => ({ ...r, type: "file", path: r.id.toString() })));
+      
+      const cachedList = await env.INDEX_KV.get(`list:${folderId}`);
+      if (cachedList) return new Response(cachedList, { headers: { "Content-Type": "application/json" } });
+
+      const { results } = await env.DB.prepare("SELECT id, name, created_at as meta FROM images WHERE folder_id = ? AND (chunk_index = 0 OR chunk_index IS NULL)").bind(folderId).all();
+      const list = results.map(r => ({ ...r, type: "file", path: r.id.toString() }));
+      ctx.waitUntil(env.INDEX_KV.put(`list:${folderId}`, JSON.stringify(list), { expirationTtl: 3600 }));
+      return json(list);
     }
 
+    // 新建目录接口 (修复点)
+    if (url.pathname === "/api/mkdir") {
+      const name = await request.text();
+      if (!name) return json({ ok: 0 });
+      await env.DB.prepare("INSERT INTO folders (name) VALUES (?)").bind(name).run();
+      await env.INDEX_KV.delete("list:"); // 清除目录列表缓存
+      return json({ ok: 1 });
+    }
+
+    // 重名检测
     if (url.pathname === "/api/check-exist") {
       const folderId = url.searchParams.get("folderId");
       const name = url.searchParams.get("name");
-      const exist = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ?").bind(folderId, name).first();
+      const exist = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ? AND (chunk_index = 0 OR chunk_index IS NULL)").bind(folderId, name).first();
       return json({ exists: !!exist, id: exist ? exist.id : null });
     }
 
+    // 覆盖上传逻辑
     if (url.pathname === "/api/upload") {
       const folderId = url.searchParams.get("path");
-      const name = url.searchParams.get("name") || "untitled.jpg";
+      const name = url.searchParams.get("name");
       const mode = url.searchParams.get("mode");
-      const base64 = await request.text();
-      const lowerName = name.toLowerCase();
-      const mime = lowerName.endsWith(".png") ? "image/png" : (lowerName.endsWith(".gif") ? "image/gif" : "image/jpeg");
+      const buffer = await request.arrayBuffer();
+      const mime = name.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
       
-      let resId;
       if (mode === "overwrite") {
-        const row = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ?").bind(folderId, name).first();
-        await env.DB.prepare("UPDATE images SET data = ?, created_at = ? WHERE id = ?").bind(base64, Date.now(), row.id).run();
-        resId = row.id;
-      } else {
-        const info = await env.DB.prepare("INSERT INTO images (folder_id, name, data, mime_type, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id")
-                                .bind(folderId, name, base64, mime, Date.now()).first();
-        resId = info.id;
+        const old = await env.DB.prepare("SELECT id FROM images WHERE folder_id = ? AND name = ?").bind(folderId, name).first();
+        if (old) {
+          const metaStr = await env.INDEX_KV.get(`file:${old.id}`);
+          if (metaStr) {
+            const meta = JSON.parse(metaStr);
+            const dbs = getDBs();
+            for (const c of meta.chunks) await dbs[c.dbIndex].prepare("DELETE FROM images WHERE id = ?").bind(c.rowId).run();
+          }
+          await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(old.id).run();
+        }
       }
-      return json({ ok: 1, id: resId });
+
+      const dbs = getDBs();
+      const chunksMeta = [];
+      let masterId = null;
+      const count = Math.ceil(buffer.byteLength / CHUNK_LIMIT);
+      
+      for (let i = 0; i < count; i++) {
+        const chunk = buffer.slice(i * CHUNK_LIMIT, (i + 1) * CHUNK_LIMIT);
+        const dbIdx = i % dbs.length;
+        const info = await dbs[dbIdx].prepare("INSERT INTO images (folder_id, name, data, mime_type, created_at, chunk_index) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
+                                     .bind(folderId, name, chunk, mime, Date.now(), i).first();
+        if (i === 0) masterId = info.id; 
+        chunksMeta.push({ dbIndex: dbIdx, rowId: info.id });
+      }
+      
+      await env.INDEX_KV.put(`file:${masterId}`, JSON.stringify({ name, mime, chunks: chunksMeta }));
+      await env.INDEX_KV.delete(`list:${folderId}`);
+      return json({ ok: 1, id: masterId });
     }
 
     if (url.pathname === "/api/delete") {
       const id = await request.text();
+      const folderRes = await env.DB.prepare("SELECT folder_id FROM images WHERE id = ?").bind(id).first();
       await env.DB.prepare("DELETE FROM images WHERE id = ?").bind(id).run();
+      await env.INDEX_KV.delete(`file:${id}`);
+      if (folderRes) await env.INDEX_KV.delete(`list:${folderRes.folder_id}`);
       return json({ ok: 1 });
     }
 
-    if (url.pathname === "/api/mkdir") {
-      const name = await request.text();
-      await env.DB.prepare("INSERT INTO folders (name) VALUES (?)").bind(name).run();
+    if (url.pathname === "/api/login" && request.method === "POST") {
+      if (await request.text() === env.GALLERY_PASSWORD) return new Response("ok", { headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" } });
+      return new Response("err", { status: 403 });
+    }
+
+    if (url.pathname === "/api/admin/rebuild-index") {
+      const { results } = await env.DB.prepare("SELECT id, name, folder_id, mime_type FROM images WHERE chunk_index IS NULL").all();
+      for (const f of results) {
+        await env.INDEX_KV.put(`file:${f.id}`, JSON.stringify({ name: f.name, mime: f.mime_type || "image/jpeg", chunks: [{ dbIndex: 0, rowId: f.id }] }));
+      }
+      await env.DB.prepare("UPDATE images SET chunk_index = 0 WHERE chunk_index IS NULL").run();
       return json({ ok: 1 });
     }
 
-    /* ================= 4. 前端界面 ================= */
+    /* ================= 4. 前端界面 (UI 绝对原版) ================= */
     if (url.pathname === "/") {
       return html(`<!DOCTYPE html>
 <html lang="zh-CN">
@@ -117,27 +168,20 @@ export default {
   .dir-bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #ddd; }
   .dir-bar span { padding: 6px 14px; background: #fff; border: 1px solid #ccc; border-radius: 20px; cursor: pointer; font-size: 13px; }
   .dir-bar span.active { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: bold; }
-  
   .img-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
-  .card { background: #fff; border-radius: 4px; overflow: hidden; border: 1px solid #e5e7eb; display: flex; flex-direction: column; }
+  .card { background: #fff; border-radius: 4px; border: 1px solid #e5e7eb; display: flex; flex-direction: column; }
   .img-box { width: 100%; aspect-ratio: 1/1; cursor: zoom-in; background: #eee; display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
-  
-  .info { padding: 4px 2px; }
+  .info { padding: 4px; }
   .info .name { display: none; }
-  .btn-group { display: flex; gap: 2px; width: 100%; }
+  .btn-group { display: flex; gap: 2px; }
   .btn-copy, .btn-del { flex: 1; padding: 6px 0; border: none; border-radius: 3px; color: #fff; font-size: 9px; cursor: pointer; text-align: center; }
   .btn-copy { background: #2563eb; }
   .btn-del { background: #ef4444; }
-
   @media (min-width: 601px) {
     .img-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; }
-    .info { padding: 6px; }
     .info .name { display: block; font-size: 10px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 4px; text-align: center; }
-    .btn-group { gap: 4px; }
-    .btn-copy, .btn-del { padding: 4px 0; font-size: 10px; }
   }
-
   #modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 100; justify-content: center; align-items: center; }
   #modal img { max-width: 98%; max-height: 98%; }
 </style>
@@ -149,151 +193,84 @@ export default {
     <button onclick="mkdir()">新建目录</button>
     <button onclick="upload()">上传图片</button>
     <button id="sortBtn" style="background:#4b5563" onclick="toggleSort()">排序: 时间↓</button>
+    <button style="background:#dc2626" onclick="rebuild()">更新索引</button>
   </div>
   <div id="dirBar" class="dir-bar"></div>
   <div id="imgGrid" class="img-grid"></div>
 </main>
 <div id="modal" onclick="this.style.display='none'"><img id="modalImg"></div>
-
 <script>
-  let curPath = ""; 
-  let sortMode = "time";
-  let cachedFiles = []; 
-
+  let curPath = "", sortMode = "time", cachedFiles = []; 
   async function loadDirs() {
-    const data = await fetch("/api/list?path=&t=" + Date.now()).then(r => r.json());
-    const bar = document.getElementById("dirBar");
-    bar.innerHTML = "";
-    if (data.length > 0) {
-      data.forEach((d, index) => {
-        const s = document.createElement("span");
-        s.textContent = d.name;
-        if(curPath === "" && index === 0) { curPath = d.path; s.className = "active"; }
-        else if(curPath == d.path) { s.className = "active"; }
-        s.onclick = () => { 
-          curPath = d.path; 
-          Array.from(bar.children).forEach(c => c.classList.remove('active'));
-          s.classList.add('active'); 
-          fetchImages(); 
-        };
-        bar.appendChild(s);
-      });
-    }
+    const data = await fetch("/api/list?path=").then(r => r.json());
+    const bar = document.getElementById("dirBar"); bar.innerHTML = "";
+    data.forEach((d, i) => {
+      const s = document.createElement("span"); s.textContent = d.name;
+      if(curPath==="" && i===0) curPath = d.path;
+      if(curPath==d.path) s.className = "active";
+      s.onclick = () => { curPath = d.path; Array.from(bar.children).forEach(c=>c.classList.remove('active')); s.classList.add('active'); fetchImages(); };
+      bar.appendChild(s);
+    });
     if(curPath) fetchImages();
   }
-
   async function fetchImages() {
-    const grid = document.getElementById("imgGrid");
-    grid.style.opacity = "0.5";
-    const data = await fetch(\`/api/list?path=\${encodeURIComponent(curPath)}&t=\${Date.now()}\`).then(r => r.json());
-    cachedFiles = data; 
-    renderImages();
+    const grid = document.getElementById("imgGrid"); grid.style.opacity = "0.5";
+    const data = await fetch("/api/list?path=" + encodeURIComponent(curPath)).then(r => r.json());
+    cachedFiles = data; renderImages();
   }
-
   function renderImages() {
     const grid = document.getElementById("imgGrid");
     let files = [...cachedFiles];
-    
-    if (sortMode === "time") {
-      files.sort((a, b) => (Number(b.meta) || 0) - (Number(a.meta) || 0));
-    } else {
-      files.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
-    }
-
+    if (sortMode === "time") files.sort((a, b) => b.meta - a.meta);
+    else files.sort((a, b) => a.name.localeCompare(b.name));
     grid.innerHTML = "";
     files.forEach(f => {
-      const shareUrl = window.location.origin + "/i/" + f.path + "/" + encodeURIComponent(f.name);
-      const div = document.createElement("div");
-      div.className = "card";
-      div.innerHTML = \`
-        <div class="img-box" onclick="show('\${shareUrl}')">
-          <img src="\${shareUrl}" loading="lazy">
-        </div>
-        <div class="info">
-          <div class="name">\${f.name}</div>
-          <div class="btn-group">
-            <button class="btn-copy" onclick="event.stopPropagation(); copy('\${shareUrl}')">复制</button>
-            <button class="btn-del" onclick="event.stopPropagation(); del('\${f.path}')">删除</button>
-          </div>
-        </div>\`;
+      const url = window.location.origin + "/i/" + f.path + "/" + encodeURIComponent(f.name);
+      const div = document.createElement("div"); div.className = "card";
+      div.innerHTML = \`<div class="img-box" onclick="show('\${url}')"><img src="\${url}" loading="lazy"></div>
+        <div class="info"><div class="name">\${f.name}</div><div class="btn-group">
+        <button class="btn-copy" onclick="copy('\${url}')">复制</button>
+        <button class="btn-del" onclick="del('\${f.path}')">删除</button></div></div>\`;
       grid.appendChild(div);
     });
     grid.style.opacity = "1";
   }
-
-  function toggleSort() {
-    sortMode = (sortMode === "time") ? "name" : "time";
-    document.getElementById("sortBtn").textContent = (sortMode === "time") ? "排序: 时间↓" : "排序: 字母A-Z";
-    renderImages(); 
-  }
-
+  async function rebuild() { if(confirm("更新旧索引？")) { await fetch("/api/admin/rebuild-index"); location.reload(); } }
+  function toggleSort() { sortMode = (sortMode==="time")?"name":"time"; document.getElementById("sortBtn").textContent=sortMode==="time"?"排序: 时间↓":"排序: 字母"; renderImages(); }
   function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
+  function copy(u) { navigator.clipboard.writeText(u); alert("已复制"); }
+  async function del(p) { if(confirm("确定删除？")) { await fetch("/api/delete",{method:"POST",body:p}); fetchImages(); } }
   
-  function copy(u) { 
-    const t = document.createElement("textarea"); t.value = u; document.body.appendChild(t); t.select();
-    try { document.execCommand('copy'); alert("直链已复制"); } catch(e) { alert("复制失败"); }
-    document.body.removeChild(t);
-  }
-  
-  async function del(p) { 
-    if(confirm("确定删除吗？")) { 
-      await fetch("/api/delete",{method:"POST",body:p}); 
-      fetchImages(); 
+  // 修复后的新建目录函数
+  async function mkdir() { 
+    const n = prompt("名称:"); 
+    if(n) { 
+      const res = await fetch("/api/mkdir", {method:"POST", body:n}); 
+      if(res.ok) {
+        curPath = ""; // 重置路径以便重新加载根列表
+        await loadDirs(); 
+      } else {
+        alert("创建失败");
+      }
     } 
   }
-
-  async function mkdir() { 
-    const n = prompt("新建子目录名称:"); 
-    if(n) { await fetch("/api/mkdir",{method:"POST",body:n}); loadDirs(); } 
-  }
-
+  
   async function upload() {
-    if(!curPath) return alert("请先选择目录");
-    
-    const inp = document.createElement("input"); 
-    inp.type="file"; 
-    inp.multiple=true; 
-    // 关键修正：移除 accept="image/*" 并改用通用类型，这样手机会弹出“文件管理器”而不是“相册”
-    // 手机端的“相册选择器”会自动重命名文件为数字，而“文件管理器”会保留原始文件名
-    inp.accept="*/*"; 
-    
+    const inp = document.createElement("input"); inp.type="file"; inp.multiple=true;
     inp.onchange = async () => {
-      const files = Array.from(inp.files);
-      for(const f of files) {
-        // 确保跳过非图片文件（如果需要的话，也可以不限制）
-        if (!f.type.startsWith('image/')) {
-           if(!confirm(\`文件 "\${f.name}" 似乎不是图片，是否继续上传？\`)) continue;
-        }
-
-        const fileName = f.name;
-        const check = await fetch(\`/api/check-exist?folderId=\${curPath}&name=\${encodeURIComponent(fileName)}\`).then(r=>r.json());
+      for(const f of inp.files) {
+        const check = await fetch(\`/api/check-exist?folderId=\${curPath}&name=\${encodeURIComponent(f.name)}\`).then(r=>r.json());
         let mode = "";
         if (check.exists) {
-          if (!confirm(\`文件 "\${fileName}" 已存在。\\n确定覆盖吗？\`)) continue;
+          if (!confirm(\`文件 "\${f.name}" 已存在。覆盖吗？\`)) continue;
           mode = "overwrite";
         }
-
-        const b = await new Promise(resolve => { 
-          const rd = new FileReader(); 
-          rd.onload = () => resolve(rd.result.split(",")[1]); 
-          rd.readAsDataURL(f); 
-        });
-        
-        const res = await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(fileName)}&mode=\${mode}\`, {
-          method: "POST", 
-          body: b
-        }).then(r=>r.json());
-        
-        if (res.id) {
-          const warmUrl = window.location.origin + "/i/" + res.id + "/" + encodeURIComponent(fileName);
-          fetch(warmUrl, { mode: 'no-cors' }); 
-        }
+        const buf = await f.arrayBuffer();
+        await fetch(\`/api/upload?path=\${curPath}&name=\${encodeURIComponent(f.name)}&mode=\${mode}\`, {method:"POST", body:buf});
       }
       fetchImages();
-    };
-    inp.click();
+    }; inp.click();
   }
-
   loadDirs();
 </script>
 </body></html>`);
