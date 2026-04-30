@@ -1,0 +1,190 @@
+/**
+ * 独立迁移工具：D1 存储格式优化 (Base64 -> Binary)
+ * 修正版：彻底解决反引号嵌套导致的语法错误
+ */
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    /* --- 1. 基础工具 --- */
+    const isAuthed = (req) => (req.headers.get("cookie") || "").includes("migrate_auth=1");
+    
+    const json = (data) => new Response(JSON.stringify(data), { 
+        headers: { 
+          "Content-Type": "application/json;charset=UTF-8",
+          "Cache-Control": "no-store" 
+        } 
+    });
+
+    const html = (body) => new Response(body, { 
+        headers: { "Content-Type": "text/html;charset=UTF-8" } 
+    });
+
+    /* --- 2. 登录校验 --- */
+    if (url.pathname === "/login") {
+      if (request.method === "POST") {
+        const pass = await request.text();
+        if (pass === env.GALLERY_PASSWORD) {
+          return new Response("ok", { 
+            headers: { "Set-Cookie": "migrate_auth=1; Path=/; HttpOnly; Max-Age=3600" } 
+          });
+        }
+        return new Response("err", { status: 403 });
+      }
+      return html(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>登录</title></head><body style="display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;background:#f0f2f5;"><div style="text-align:center;background:#fff;padding:40px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,0.1);"><h3>管理登录</h3><input id="p" type="password" style="padding:10px;margin-bottom:10px;width:200px;"><br><button onclick="doLogin()" style="padding:10px 30px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;">进入</button></div><script>async function doLogin(){const r=await fetch('/login',{method:'POST',body:document.getElementById('p').value});if(r.ok)location.href='/';else alert('错误')}<\/script></body></html>`);
+    }
+
+    if (!isAuthed(request)) return Response.redirect(url.origin + "/login", 302);
+
+    /* --- 3. 核心 API 接口 --- */
+
+    // 获取列表
+    if (url.pathname === "/api/list") {
+      const { results } = await env.DB.prepare("SELECT id, name FROM images WHERE typeof(data) = 'text'").all();
+      return json(results);
+    }
+
+    // 执行转换
+    if (url.pathname === "/api/convert") {
+      const id = url.searchParams.get("id");
+      try {
+        const img = await env.DB.prepare("SELECT id, data, name FROM images WHERE id = ?").bind(id).first();
+        if (!img) return json({ ok: false, error: "Record not found" });
+
+        let binaryData;
+        
+        // 关键修正：不使用嵌套反引号，改用普通加号拼接 URL
+        const cacheUrl = url.origin + "/i/" + img.id + "/" + encodeURIComponent(img.name);
+        const cache = caches.default;
+        const cachedRes = await cache.match(cacheUrl);
+
+        if (cachedRes) {
+          const buffer = await cachedRes.arrayBuffer();
+          binaryData = new Uint8Array(buffer);
+        } else {
+          // Base64 解码
+          const raw = atob(img.data);
+          binaryData = Uint8Array.from(raw, c => c.charCodeAt(0));
+        }
+
+        // 更新回 D1 (绑定 Uint8Array 自动存为 BLOB)
+        await env.DB.prepare("UPDATE images SET data = ? WHERE id = ?").bind(binaryData, id).run();
+        return json({ ok: true });
+      } catch (e) {
+        return json({ ok: false, error: e.message });
+      }
+    }
+
+    /* --- 4. 管理面板前端 (已修正转义问题) --- */
+    return html(`
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <title>D1 存储优化面板</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; background: #f8fafc; padding: 20px; color: #1e293b; }
+        .container { max-width: 800px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); }
+        .header { border-bottom: 2px solid #f1f5f9; margin-bottom: 25px; padding-bottom: 15px; }
+        .progress-box { height: 20px; background: #e2e8f0; border-radius: 10px; margin: 25px 0; overflow: hidden; }
+        .progress-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.4s ease; }
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 25px; }
+        .stat-card { background: #f1f5f9; padding: 15px; border-radius: 8px; text-align: center; }
+        .stat-card b { font-size: 20px; display: block; margin-top: 5px; }
+        #log { height: 300px; background: #0f172a; color: #38bdf8; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 12px; overflow-y: auto; line-height: 1.6; }
+        button { width: 100%; padding: 15px; background: #2563eb; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; }
+        button:disabled { background: #cbd5e1; cursor: not-allowed; }
+        .err { color: #f87171; border-left: 2px solid #ef4444; padding-left: 8px; margin: 4px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>🚀 D1 存储格式优化工具</h2>
+            <p>正在将数据从 Base64 文本转换为 Binary 二进制 (BLOB)</p>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card"><span>待处理</span><b id="total">-</b></div>
+            <div class="stat-card"><span>成功</span><b id="success" style="color:#10b981;">0</b></div>
+            <div class="stat-card"><span>失败</span><b id="fail" style="color:#ef4444;">0</b></div>
+        </div>
+
+        <div class="progress-box"><div class="progress-fill" id="progress"></div></div>
+        
+        <button id="mainBtn" onclick="runTasks()">开始批量执行转换</button>
+        <div id="log" style="margin-top:20px;">等待操作指令...</div>
+    </div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        let isRunning = false;
+
+        function writeLog(text, isError = false) {
+            const item = document.createElement('div');
+            if(isError) item.className = 'err';
+            const time = new Date().toLocaleTimeString();
+            item.textContent = "[" + time + "] " + text;
+            logEl.appendChild(item);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        async function runTasks() {
+            if(isRunning) return;
+            isRunning = true;
+            document.getElementById('mainBtn').disabled = true;
+            logEl.innerHTML = '';
+            
+            writeLog("正在从数据库拉取任务列表...");
+            try {
+                const list = await fetch('/api/list').then(r => r.json());
+                const total = list.length;
+                document.getElementById('total').textContent = total;
+                
+                if(total === 0) {
+                    writeLog("🎉 扫描完成：没有发现需要处理的旧格式数据。");
+                    isRunning = false;
+                    return;
+                }
+
+                writeLog("准备处理 " + total + " 个记录...");
+                let success = 0;
+                let fail = 0;
+
+                for(let i = 0; i < total; i++) {
+                    const item = list[i];
+                    try {
+                        const res = await fetch("/api/convert?id=" + item.id).then(r => r.json());
+                        if(res.ok) {
+                            success++;
+                            document.getElementById('success').textContent = success;
+                            writeLog("✅ 已处理: " + item.name);
+                        } else {
+                            throw new Error(res.error || "转换失败");
+                        }
+                    } catch(e) {
+                        fail++;
+                        document.getElementById('fail').textContent = fail;
+                        writeLog("❌ 失败: " + item.name + " -> " + e.message, true);
+                    }
+                    
+                    const percent = ((i + 1) / total * 100) + "%";
+                    document.getElementById('progress').style.width = percent;
+                }
+                
+                writeLog("==============================");
+                writeLog("任务结束。成功: " + success + "，失败: " + fail);
+            } catch(e) {
+                writeLog("致命错误: " + e.message, true);
+            }
+            isRunning = false;
+            document.getElementById('mainBtn').disabled = false;
+        }
+    </script>
+</body>
+</html>
+`);
+  }
+};
