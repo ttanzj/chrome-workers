@@ -1,6 +1,6 @@
 [Workers1-3](README.md) | [workers-domain](README.domain.md)  | [workers-blog](README.blog.md)  | [workers-tuku](README.tuku.md) | workers-tukud1
 
-### 这是一个依托cloudflar的workers做前端，依托D1存储建立的个人图库项目，由Ai制作而成。因D1库限制，上传图片最好在2M以下，并且总量不能超先天限制。
+### 这是一个依托cloudflar的workers做前端，依托D1存储建立的个人图库项目，由Ai制作而成。因D1库限制，采用了分片上传突破单图2M上限，但太大运行也困难，多库链接可突破到3G总存储。
 一、选择 Workers
 点击 Create Worker，将代码替换原模板代码。
 二、创建D1库
