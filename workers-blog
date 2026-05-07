@@ -164,16 +164,16 @@ function parseTables(text) {
 function md(t) {
   if (!t) return "";
 
-  // 1. 先将 \ 及其后续可能的所有 Markdown 符号保护起来，防止被正则解析
-  // 这里支持连续符号，如 \**
+  // 1. 转义字符保护 (如 \* )
   let content = t.replace(/\\([*#_>`[\]()!|~-]+)/g, (m, p1) => {
     return p1.split('').map(char => `%%ESC_${char.charCodeAt(0)}%%`).join('');
   });
 
-  // 2. HTML 转义（此时 &emsp; 变成了 &amp;emsp;）
+  // 2. HTML 转义（防止脚本注入）
   content = escape(content);
 
-  // 3. 专门还原 &emsp; 让其起作用
+  // 3. 【关键：支持 &emsp; 写法】
+  // 因为 escape 会把 & 转义成 &amp;，这里将 &amp;emsp; 还原为标准的 HTML 实体 &emsp;
   content = content.replace(/&amp;emsp;/g, '&emsp;');
 
   // 4. 代码块保护
@@ -183,7 +183,7 @@ function md(t) {
     return `%%CODEBLOCK_${codes.length - 1}%%`;
   });
 
-  // 5. 表格
+  // 5. 表格解析
   content = parseTables(content);
 
   // 6. 块级元素
@@ -216,7 +216,7 @@ function md(t) {
   // 9. 还原代码块
   content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}</code></pre>`);
   
-  // 10. 最终还原被终止的符号
+  // 10. 还原被保护的转义符号
   content = content.replace(/%%ESC_(\d+)%%/g, (m, p1) => String.fromCharCode(p1));
   
   return content;
@@ -229,19 +229,14 @@ function baseStyle() {
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
 body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
-
 .view-content { min-height: 450px; word-wrap: break-word; font-size: 15.5px; }
-
-/* 允许手动使用 emsp 缩进，不强制清除缩进 */
 .view-content p, .view-content div { margin: 0.1em 0; }
-
 .view-content h1, .view-content h2, .view-content h3, 
 .view-content h4, .view-content h5, .view-content h6,
 .view-content table, .view-content pre {
   margin-top: 0.8em;
   margin-bottom: 0.03em;
 }
-
 .view-content blockquote { 
   border-left: 4px solid #ddd; 
   padding: 4px 0 4px 12px; 
@@ -249,16 +244,13 @@ body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background:
   color: #666; 
   background: #f9f9f9; 
 }
-
 .view-content ul {
   margin: 0.4em 0;
   padding-left: 1.5em;
 }
-
 .view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; }
 .view-content table { border-spacing: 0; border: 1px solid #ddd; }
 .view-content img { max-width: 100%; height: auto; border-radius: 4px; }
-
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
