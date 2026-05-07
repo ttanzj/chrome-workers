@@ -41,7 +41,7 @@ CREATE TABLE docs (
 
 - 回到该 Worker 的详情页面，点击 Settings (设置) 选项卡。
 
-#### 绑定数据库：
+#### &emsp;绑定数据库：
 
 - 点击左侧的 Bindings (绑定)。
 
@@ -51,7 +51,7 @@ CREATE TABLE docs (
 
 - 点击 Save。
 
-#### 设置登录密码：
+#### &emsp;设置登录密码：
 
 - 点击左侧的 Variables (变量)。在 Environment Variables 处点击 Add variable。
 
@@ -59,9 +59,9 @@ CREATE TABLE docs (
 
 - 点击 Save and deploy。
 
-#### 现在，你可以通过 Worker 提供的 *.workers.dev 域名访问你的文档系统了。
+#### &emsp;现在，你可以通过 Worker 提供的 *.workers.dev 域名访问你的文档系统了。
 
-### Markdown 支持的正则列表
+### 二、Markdown 支持的正则列表
 
 当前代码通过原生正则表达式实现了一套轻量级解析引擎，其支持情况如下：
 
