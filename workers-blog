@@ -164,15 +164,16 @@ function parseTables(text) {
 function md(t) {
   if (!t) return "";
 
-  // 1. 转义保护：仅处理特定 MD 符号，不干扰 HTML 实体（如 &emsp;）
-  let content = t.replace(/\\([*#_>`[\]()!|~-])/g, (m, p1) => {
-    return `%%ESC_${p1.charCodeAt(0)}%%`;
+  // 1. 转义字符保护 (如 \* )
+  let content = t.replace(/\\([*#_>`[\]()!|~-]+)/g, (m, p1) => {
+    return p1.split('').map(char => `%%ESC_${char.charCodeAt(0)}%%`).join('');
   });
 
-  // 2. HTML 转义
+  // 2. HTML 转义（防止脚本注入）
   content = escape(content);
 
-  // 3. 还原全角空格（支持 &emsp; 写法）
+  // 3. 【关键：支持 &emsp; 写法】
+  // 因为 escape 会把 & 转义成 &amp;，这里将 &amp;emsp; 还原为标准的 HTML 实体 &emsp;
   content = content.replace(/&amp;emsp;/g, '&emsp;');
 
   // 4. 代码块保护
@@ -182,7 +183,7 @@ function md(t) {
     return `%%CODEBLOCK_${codes.length - 1}%%`;
   });
 
-  // 5. 表格
+  // 5. 表格解析
   content = parseTables(content);
 
   // 6. 块级元素
@@ -209,18 +210,13 @@ function md(t) {
     .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>')
     .replace(/`(.*?)`/g, '<code>$1</code>');
 
-  // 8. 换行处理 (GitHub 标准)
-  // a. 行尾两个空格 + 换行 -> <br>
-  content = content.replace(/[ ]{2}\n/g, "<br>");
-  // b. 空一行 (双换行) -> 分段效果
-  content = content.replace(/\n\s*\n/g, "<br><br>");
-  // c. 普通单换行 -> 合并为一个空格 (防止行间距过大)
-  content = content.replace(/\n/g, " ");
+  // 8. 换行处理
+  content = content.replace(/\n/g, "<br>").replace(/&lt;br&gt;/g, "<br>");
 
   // 9. 还原代码块
   content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}</code></pre>`);
   
-  // 10. 还原转义符号
+  // 10. 还原被保护的转义符号
   content = content.replace(/%%ESC_(\d+)%%/g, (m, p1) => String.fromCharCode(p1));
   
   return content;
