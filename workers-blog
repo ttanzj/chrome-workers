@@ -205,7 +205,8 @@ function md(t) {
     .replace(/~~(.*?)~~/g, `<del>$1${c('del')}`)
     .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1">')
     .replace(/\[(.*?)\]\((.*?)\)/g, `<a href="$2" target="_blank">$1${c('a')}`)
-    .replace(/`(.*?)`/g, `<code>$1${c('code')}`);
+    // 为单行代码添加类名以方便独立控制样式
+    .replace(/`(.*?)`/g, `<code class="inline-code">$1${c('code')}`);
 
   const blockTags = 'h1|h2|h3|h4|h5|h6|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|pre|hr|div';
   const lines = content.split('\n');
@@ -243,11 +244,25 @@ strong, b, h1, h2, h3, h4, h5, h6, .title, .header h2 { font-weight: 550; }
 .view-content h4, .view-content h5, .view-content h6 { margin: 0.4em 0 0.1em 0; line-height: 1.2; }
 
 /* 直线优化：大幅压缩下方留白 */
-.view-content hr { border: none; border-top: 1px solid #ddd; margin: 0.2em 0 0.1em 0; }
+.view-content hr { border: none; border-top: 1px solid #ddd; margin: 0.2em 0 0.05em 0; }
 
 .view-content blockquote { border-left: 4px solid #ddd; padding: 4px 15px; margin: 0.4em 0; color: #666; background: #f9f9f9; }
 .view-content ul { margin: 0.3em 0; padding-left: 1.5em; }
+
+/* 代码引用样式：字体一致并添加阴影 */
+.view-content code.inline-code { 
+  font-family: inherit !important; 
+  background: #f1f5f9; 
+  padding: 2px 6px; 
+  border-radius: 4px; 
+  font-size: inherit;
+  box-shadow: 1px 1px 3px rgba(0,0,0,0.12);
+  margin: 0 2px;
+}
+
+/* 多行代码块：保持等宽字体 */
 .view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.6em 0; font-size: 13.5px; }
+
 .view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.4em 0; }
 .view-content img { max-width: 100%; height: auto; border-radius: 4px; display: block; margin: 0.2em 0; }
 
