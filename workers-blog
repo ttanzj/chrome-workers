@@ -165,12 +165,17 @@ function md(t) {
   if (!t) return "";
   const c = (tag) => `<\u002f${tag}>`;
 
+  // 1. 保护转义字符
   let content = t.replace(/\\([*#_>`[\]()!|~-]+)/g, (m, p1) => {
     return p1.split('').map(char => `%%ESC_${char.charCodeAt(0)}%%`).join('');
   });
 
-  content = escape(content).replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+  // 2. 先进行全局转义
+  content = escape(content);
+
+  // 3. 还原特定实体，确保 &emsp; 这种不在正则处理中失效
   content = content.replace(/&amp;emsp;/g, '&emsp;');
+  content = content.replace(/&lt;br\s*\/?&gt;/gi, '<br>');
 
   const codes = [];
   content = content.replace(/```([\s\S]*?)```/g, (m, p1) => {
@@ -181,7 +186,7 @@ function md(t) {
   content = parseTables(content);
 
   content = content
-    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:0.4em 0;">')
+    .replace(/^\*\*\*$/gm, '<hr>')
     .replace(/^###### (.*$)/gm, `<h6>$1${c('h6')}`)
     .replace(/^##### (.*$)/gm, `<h5>$1${c('h5')}`)
     .replace(/^#### (.*$)/gm, `<h4>$1${c('h4')}`)
@@ -198,7 +203,7 @@ function md(t) {
     .replace(/\*\**(.*?)\*\*/g, `<strong>$1${c('strong')}`)
     .replace(/\*(.*?)\*/g, `<em>$1${c('em')}`)
     .replace(/~~(.*?)~~/g, `<del>$1${c('del')}`)
-    .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" style="max-width:100%">')
+    .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1">')
     .replace(/\[(.*?)\]\((.*?)\)/g, `<a href="$2" target="_blank">$1${c('a')}`)
     .replace(/`(.*?)`/g, `<code>$1${c('code')}`);
 
@@ -207,14 +212,8 @@ function md(t) {
   const processedLines = lines.map((line, idx) => {
     const trimmed = line.trim();
     if (idx === lines.length - 1) return line;
-    
-    // 如果是空行，转换为一个占位的 <br>，用于保留手动换行
     if (trimmed === "") return '<br class="blank-line">'; 
-    
-    // 如果已经是块级标签结尾，不需要加换行
     if (new RegExp(`${c('(' + blockTags + ')')}$`, 'i').test(trimmed) || trimmed.endsWith('<br>')) return line;
-    
-    // 普通行尾加换行
     return line + '<br>';
   });
   
@@ -233,20 +232,28 @@ function baseStyle() {
 body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; font-size: 14.5px; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
 strong, b, h1, h2, h3, h4, h5, h6, .title, .header h2 { font-weight: 550; }
+
 .view-content { min-height: 450px; word-wrap: break-word; }
 .view-content p, .view-content div { margin: 0; }
-.view-content h1 { font-size: 1.45rem; margin: 0.6em 0 0.3em 0; }
-.view-content h2 { font-size: 1.25rem; margin: 0.6em 0 0.3em 0; }
-.view-content h3 { font-size: 1.1rem; margin: 0.5em 0 0.2em 0; }
-.view-content blockquote { border-left: 4px solid #ddd; padding: 4px 15px; margin: 0.6em 0; color: #666; background: #f9f9f9; }
-.view-content ul { margin: 0.4em 0; padding-left: 1.5em; }
-.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.8em 0; font-size: 13.5px; }
-.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.6em 0; }
-.view-content img { max-width: 100%; height: auto; border-radius: 4px; margin: 0.5em 0; }
 
-/* 关键修复：控制普通换行和手动空行的间距 */
-.view-content br { content: ""; display: block; margin-top: 0px; } 
-.view-content br.blank-line { margin-top: 10px; } /* 手动空行的高度，可根据喜好调整 */
+/* 标题优化：行高随字号调整，减少上下间隙 */
+.view-content h1 { font-size: 1.45rem; margin: 0.5em 0 0.2em 0; line-height: 1.2; }
+.view-content h2 { font-size: 1.25rem; margin: 0.5em 0 0.2em 0; line-height: 1.2; }
+.view-content h3 { font-size: 1.1rem; margin: 0.5em 0 0.2em 0; line-height: 1.2; }
+.view-content h4, .view-content h5, .view-content h6 { margin: 0.4em 0 0.1em 0; line-height: 1.2; }
+
+/* 直线优化：大幅压缩下方留白 */
+.view-content hr { border: none; border-top: 1px solid #ddd; margin: 0.2em 0 0.1em 0; }
+
+.view-content blockquote { border-left: 4px solid #ddd; padding: 4px 15px; margin: 0.4em 0; color: #666; background: #f9f9f9; }
+.view-content ul { margin: 0.3em 0; padding-left: 1.5em; }
+.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.6em 0; font-size: 13.5px; }
+.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.4em 0; }
+.view-content img { max-width: 100%; height: auto; border-radius: 4px; display: block; margin: 0.2em 0; }
+
+/* 换行控制 */
+.view-content br { content: ""; display: block; margin-top: 0px; }
+.view-content br.blank-line { margin-top: 8px; }
 
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
