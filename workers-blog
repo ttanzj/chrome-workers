@@ -139,7 +139,7 @@ function parseTables(text) {
       
       tableHtml += `<thead><tr>`;
       parseRow(tableLines[0]).forEach(c => {
-        tableHtml += `<th style="border:1px solid #ddd;padding:6px 10px;background:#f8fafc;text-align:center;">${c.trim()}</th>`;
+        tableHtml += `<th style="border:1px solid #ddd;padding:6px 10px;background:#f8fafc;text-align:center;font-weight:550;">${c.trim()}</th>`;
       });
       tableHtml += `</tr></thead><tbody>`;
       
@@ -160,36 +160,28 @@ function parseTables(text) {
   return result.join('\n');
 }
 
-/* ================= Markdown 解析优化版 ================= */
+/* ================= Markdown 解析 ================= */
 function md(t) {
   if (!t) return "";
-
   const c = (tag) => `<\u002f${tag}>`;
 
-  // 1. 转义保护
   let content = t.replace(/\\([*#_>`[\]()!|~-]+)/g, (m, p1) => {
     return p1.split('').map(char => `%%ESC_${char.charCodeAt(0)}%%`).join('');
   });
 
-  // 2. HTML 转义并还原手动换行标签
   content = escape(content).replace(/&lt;br\s*\/?&gt;/gi, '<br>');
-
-  // 3. 支持 &emsp;
   content = content.replace(/&amp;emsp;/g, '&emsp;');
 
-  // 4. 代码块保护
   const codes = [];
   content = content.replace(/```([\s\S]*?)```/g, (m, p1) => {
     codes.push(p1);
     return `%%CODEBLOCK_${codes.length - 1}%%`;
   });
 
-  // 5. 表格解析
   content = parseTables(content);
 
-  // 6. 块级元素渲染
   content = content
-    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:1em 0;">')
+    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:0.4em 0;">') // 减少直线留空
     .replace(/^###### (.*$)/gm, `<h6>$1${c('h6')}`)
     .replace(/^##### (.*$)/gm, `<h5>$1${c('h5')}`)
     .replace(/^#### (.*$)/gm, `<h4>$1${c('h4')}`)
@@ -201,7 +193,6 @@ function md(t) {
     .replace(/^- (.*$)/gm, `<ul><li>$1${c('li')}${c('ul')}`)
     .split(`${c('ul')}\n<ul>`).join('');
 
-  // 7. 内联格式
   content = content
     .replace(/\*\*\*(.*?)\*\*\*/g, `<strong><em>$1${c('em')}${c('strong')}`)
     .replace(/\*\**(.*?)\*\*/g, `<strong>$1${c('strong')}`)
@@ -211,31 +202,19 @@ function md(t) {
     .replace(/\[(.*?)\]\((.*?)\)/g, `<a href="$2" target="_blank">$1${c('a')}`)
     .replace(/`(.*?)`/g, `<code>$1${c('code')}`);
 
-  // 8. 修复行间距逻辑：过滤空行并精确判定块级元素
   const blockTags = 'h1|h2|h3|h4|h5|h6|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|pre|hr|div';
   const lines = content.split('\n');
   const processedLines = lines.map((line, idx) => {
     const trimmed = line.trim();
     if (idx === lines.length - 1) return line;
-    
-    // 如果是空行，不进行任何处理
     if (trimmed === "") return ""; 
-
-    // 如果是以块级标签闭合结尾，或者已经有手动换行，则不加 <br>
-    if (new RegExp(`${c('(' + blockTags + ')')}$`, 'i').test(trimmed) || trimmed.endsWith('<br>')) {
-      return line;
-    }
+    if (new RegExp(`${c('(' + blockTags + ')')}$`, 'i').test(trimmed) || trimmed.endsWith('<br>')) return line;
     return line + '<br>';
-  }).filter(l => l !== ""); // 移除逻辑产生的空白项
+  }).filter(l => l !== "");
   
   content = processedLines.join('\n');
-
-  // 9. 还原代码块
   content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}${c('code')}${c('pre')}`);
-  
-  // 10. 还原转义符号
   content = content.replace(/%%ESC_(\d+)%%/g, (m, p1) => String.fromCharCode(p1));
-  
   return content;
 }
 
@@ -245,55 +224,48 @@ function baseStyle() {
   return `
 <style>
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
-body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.4; }
+body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.4; font-size: 14.5px; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
 
-/* 渲染内容样式精调 */
-.view-content { min-height: 450px; word-wrap: break-word; font-size: 15.5px; }
+/* 字体权重修正：加粗设为550 */
+strong, b, h1, h2, h3, h4, h5, h6, .title, .header h2 { font-weight: 550; }
+
+.view-content { min-height: 450px; word-wrap: break-word; }
 .view-content p, .view-content div { margin: 0; }
-.view-content h1, .view-content h2, .view-content h3, 
-.view-content h4, .view-content h5, .view-content h6 {
-  margin-top: 0.8em;
-  margin-bottom: 0.3em;
-  line-height: 1.2;
-}
-.view-content blockquote { 
-  border-left: 4px solid #ddd; 
-  padding: 4px 15px; 
-  margin: 0.5em 0; 
-  color: #666; 
-  background: #f9f9f9; 
-}
-.view-content ul {
-  margin: 0.4em 0;
-  padding-left: 1.5em;
-}
-.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.8em 0; }
-.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.5em 0; }
+/* 调整标题：缩小字号并减少上下间距 */
+.view-content h1 { font-size: 1.45rem; margin: 0.5em 0 0.2em 0; }
+.view-content h2 { font-size: 1.25rem; margin: 0.5em 0 0.2em 0; }
+.view-content h3 { font-size: 1.1rem; margin: 0.5em 0 0.2em 0; }
+.view-content h4, .view-content h5, .view-content h6 { margin: 0.4em 0 0.1em 0; }
+
+.view-content blockquote { border-left: 4px solid #ddd; padding: 4px 15px; margin: 0.4em 0; color: #666; background: #f9f9f9; }
+.view-content ul { margin: 0.3em 0; padding-left: 1.5em; }
+.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.6em 0; font-size: 13.5px; }
+.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.4em 0; }
 .view-content img { max-width: 100%; height: auto; border-radius: 4px; }
 .view-content br { content: ""; display: block; margin-top: 2px; }
 
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-.header h2 { margin: 0; font-size: 22px; }
-button { padding: 8px 16px; font-size: 14px; border: none; border-radius: 8px; cursor: pointer; }
+.header h2 { margin: 0; font-size: 20px; }
+button { padding: 8px 16px; font-size: 13.5px; border: none; border-radius: 8px; cursor: pointer; }
 .btn-primary { background: var(--primary); color: #fff; }
 .btn-ghost { background: #e5e7eb; color: #333; }
-input, textarea { width: 100%; padding: 12px; font-size: 16px; margin-top: 8px; border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; }
+input, textarea { width: 100%; padding: 11px; font-size: 14.5px; margin-top: 8px; border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; }
 textarea { min-height: 380px; line-height: 1.5; font-family: monospace; resize: vertical; }
 .doc-item { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; transition: all 0.2s; overflow: hidden; }
-.title { font-weight: 600; cursor: pointer; text-decoration: none; color: var(--text); }
+.title { cursor: pointer; text-decoration: none; color: var(--text); }
 .tag { background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
-.actions a { text-decoration: none; font-size: 18px; }
+.actions a { text-decoration: none; font-size: 17px; }
 .list .doc-item { display: flex; align-items: center; padding: 10px 16px; gap: 12px; margin-bottom: 8px; }
 .list .title-line { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
-.list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px; }
+.list .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14.5px; }
 .list .actions { display: flex; gap: 15px; flex-shrink: 0; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
 .grid .doc-item { padding: 15px; display: flex; flex-direction: column; text-align: center; }
 .grid .actions { margin-top: auto; padding-top: 12px; display: flex; justify-content: center; gap: 20px; }
-.category-btn { padding: 6px 12px; border-radius: 20px; font-size: 13px; background: #fff; border: 1px solid #e2e8f0; text-decoration: none; color: inherit; }
+.category-btn { padding: 5px 12px; border-radius: 20px; font-size: 12.5px; background: #fff; border: 1px solid #e2e8f0; text-decoration: none; color: inherit; }
 .category-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
 @media (max-width: 600px) { .container { padding: 10px; } .grid { grid-template-columns: 1fr 1fr; gap: 8px; } textarea { min-height: 300px; font-size: 14px; } }
 </style>`;
@@ -305,7 +277,7 @@ function loginPage(msg="") {
 <div class="login-wrapper">
   <div class="card" style="width:100%; max-width:320px;">
     <h2 style="text-align:center; margin-bottom:20px">系统登录${c('h2')}
-    ${msg ? `<p style="color:red;text-align:center;font-size:14px">${msg}${c('p')}` : ""}
+    ${msg ? `<p style="color:red;text-align:center;font-size:13.5px">${msg}${c('p')}` : ""}
     <form method="post">
       <input type="password" name="password" placeholder="密码" autofocus>
       <button class="btn-primary" style="width:100%;margin-top:16px;padding:12px">确认</button>
@@ -382,14 +354,14 @@ function viewPage(d) {
   return `${baseStyle()}
 <div class="container">
   <div class="card">
-    <h1 style="margin:0 0 10px 0; font-size:1.6rem;">${d.title}${c('h1')}
-    <div style="font-size:13px; color:#666; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
+    <h1 style="margin:0 0 10px 0;">${d.title}${c('h1')}
+    <div style="font-size:12.5px; color:#666; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
       ${d.category ? `分类: ${d.category}` : '未分类'}
     ${c('div')}
     <div class="view-content">${md(d.content)}${c('div')}
     <div style="margin-top:25px; border-top:1px solid #eee; padding-top:15px; display:flex; gap:15px; align-items:center;">
-      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:500;">← 返回首页${c('a')}
-      <a href="/edit?id=${d.id}" style="color:var(--primary); text-decoration:none; font-weight:500;">✏️ 编辑文档${c('a')}
+      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:550; font-size:13.5px;">← 返回首页${c('a')}
+      <a href="/edit?id=${d.id}" style="color:var(--primary); text-decoration:none; font-weight:550; font-size:13.5px;">✏️ 编辑文档${c('a')}
     ${c('div')}
   ${c('div')}
 ${c('div')}`;
