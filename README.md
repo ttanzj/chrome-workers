@@ -1,7 +1,7 @@
 Workers1-3 | [workers-domain](README.domain.md)  | [workers-blog](README.blog.md) | [workers-tuku](README.tuku.md) | [workers-tukud1](README.tukud1.md)
 
 
-### Workers1\2\3是三个chromego节点提取工具
+### Workers1\3是两个部署在CF上的workers chromego节点提取工具
 
 
 ## workers-1
@@ -11,10 +11,6 @@ Workers1-3 | [workers-domain](README.domain.md)  | [workers-blog](README.blog.md
 KV namespace：选择你创建的那个  
 chromego地址为26.3.6下载最新版新提取地址  
 首次访问会较慢（抓取几十个源），之后从 KV 读取几乎瞬时。  
-
-## workers-2  
-
-chromego地址为原其他作者旧地址
 
 ## workers-3
 
