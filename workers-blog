@@ -134,24 +134,24 @@ function parseTables(text) {
         i++;
       }
 
-      let html = `<table style="border-collapse:collapse;width:auto;max-width:100%;margin:0.8em 0 0.03em 0;background:#fff;display:table;">`;
+      let tableHtml = `<table style="border-collapse:collapse;width:auto;max-width:100%;margin:0.5em 0;background:#fff;display:table;">`;
       const parseRow = (row) => row.split('|').filter((c, idx, arr) => (idx !== 0 && idx !== arr.length - 1) || c.trim());
       
-      html += `<thead><tr>`;
+      tableHtml += `<thead><tr>`;
       parseRow(tableLines[0]).forEach(c => {
-        html += `<th style="border:1px solid #ddd;padding:6px 10px;background:#f8fafc;text-align:center;">${c.trim()}</th>`;
+        tableHtml += `<th style="border:1px solid #ddd;padding:6px 10px;background:#f8fafc;text-align:center;">${c.trim()}</th>`;
       });
-      html += `</tr></thead><tbody>`;
+      tableHtml += `</tr></thead><tbody>`;
       
       for (let j = 2; j < tableLines.length; j++) {
-        html += `<tr>`;
+        tableHtml += `<tr>`;
         parseRow(tableLines[j]).forEach(c => {
-          html += `<td style="border:1px solid #ddd;padding:6px 10px;">${c.trim()}</td>`;
+          tableHtml += `<td style="border:1px solid #ddd;padding:6px 10px;">${c.trim()}</td>`;
         });
-        html += `</tr>`;
+        tableHtml += `</tr>`;
       }
-      html += `</tbody></table>`;
-      result.push(html);
+      tableHtml += `</tbody></table>`;
+      result.push(tableHtml);
     } else {
       result.push(lines[i]);
       i++;
@@ -171,7 +171,7 @@ function md(t) {
     return p1.split('').map(char => `%%ESC_${char.charCodeAt(0)}%%`).join('');
   });
 
-  // 2. HTML 转义 并 还原手动 <br>
+  // 2. HTML 转义并还原手动换行标签
   content = escape(content).replace(/&lt;br\s*\/?&gt;/gi, '<br>');
 
   // 3. 支持 &emsp;
@@ -189,7 +189,7 @@ function md(t) {
 
   // 6. 块级元素渲染
   content = content
-    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:1.2em 0;">')
+    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:1em 0;">')
     .replace(/^###### (.*$)/gm, `<h6>$1${c('h6')}`)
     .replace(/^##### (.*$)/gm, `<h5>$1${c('h5')}`)
     .replace(/^#### (.*$)/gm, `<h4>$1${c('h4')}`)
@@ -211,24 +211,23 @@ function md(t) {
     .replace(/\[(.*?)\]\((.*?)\)/g, `<a href="$2" target="_blank">$1${c('a')}`)
     .replace(/`(.*?)`/g, `<code>$1${c('code')}`);
 
-  // 8. 修复行间距过大核心逻辑
+  // 8. 修复行间距逻辑：过滤空行并精确判定块级元素
   const blockTags = 'h1|h2|h3|h4|h5|h6|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|pre|hr|div';
   const lines = content.split('\n');
   const processedLines = lines.map((line, idx) => {
     const trimmed = line.trim();
     if (idx === lines.length - 1) return line;
     
-    // 如果是空行，不加换行符
-    if (!trimmed) return ""; 
+    // 如果是空行，不进行任何处理
+    if (trimmed === "") return ""; 
 
-    // 如果是以块级标签结尾，或者该行已经手动包含 <br>，则直接返回
+    // 如果是以块级标签闭合结尾，或者已经有手动换行，则不加 <br>
     if (new RegExp(`${c('(' + blockTags + ')')}$`, 'i').test(trimmed) || trimmed.endsWith('<br>')) {
       return line;
     }
-    // 普通文本行，转换换行符为 <br>
     return line + '<br>';
-  }).filter(l => l !== ""); // 过滤掉多余空行
-
+  }).filter(l => l !== ""); // 移除逻辑产生的空白项
+  
   content = processedLines.join('\n');
 
   // 9. 还原代码块
@@ -246,30 +245,34 @@ function baseStyle() {
   return `
 <style>
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
-body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; }
+body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.4; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
+
+/* 渲染内容样式精调 */
 .view-content { min-height: 450px; word-wrap: break-word; font-size: 15.5px; }
 .view-content p, .view-content div { margin: 0; }
 .view-content h1, .view-content h2, .view-content h3, 
-.view-content h4, .view-content h5, .view-content h6,
-.view-content table, .view-content pre {
-  margin-top: 1.2em;
-  margin-bottom: 0.5em;
+.view-content h4, .view-content h5, .view-content h6 {
+  margin-top: 0.8em;
+  margin-bottom: 0.3em;
+  line-height: 1.2;
 }
 .view-content blockquote { 
   border-left: 4px solid #ddd; 
-  padding: 8px 15px; 
-  margin: 1.2em 0; 
+  padding: 4px 15px; 
+  margin: 0.5em 0; 
   color: #666; 
   background: #f9f9f9; 
 }
 .view-content ul {
-  margin: 0.8em 0;
+  margin: 0.4em 0;
   padding-left: 1.5em;
 }
-.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 1em 0; }
-.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 1em 0; }
+.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.8em 0; }
+.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.5em 0; }
 .view-content img { max-width: 100%; height: auto; border-radius: 4px; }
+.view-content br { content: ""; display: block; margin-top: 2px; }
+
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
