@@ -160,20 +160,21 @@ function parseTables(text) {
   return result.join('\n');
 }
 
-/* ================= Markdown 解析修复版 ================= */
+/* ================= Markdown 解析优化版 ================= */
 function md(t) {
   if (!t) return "";
 
-  // 1. 转义字符保护 (如 \* )
+  const c = (tag) => `<\u002f${tag}>`;
+
+  // 1. 转义保护
   let content = t.replace(/\\([*#_>`[\]()!|~-]+)/g, (m, p1) => {
     return p1.split('').map(char => `%%ESC_${char.charCodeAt(0)}%%`).join('');
   });
 
-  // 2. HTML 转义（防止脚本注入）
-  content = escape(content);
+  // 2. HTML 转义 并 还原手动 <br>
+  content = escape(content).replace(/&lt;br\s*\/?&gt;/gi, '<br>');
 
-  // 3. 【关键：支持 &emsp; 写法】
-  // 因为 escape 会把 & 转义成 &amp;，这里将 &amp;emsp; 还原为标准的 HTML 实体 &emsp;
+  // 3. 支持 &emsp;
   content = content.replace(/&amp;emsp;/g, '&emsp;');
 
   // 4. 代码块保护
@@ -186,37 +187,54 @@ function md(t) {
   // 5. 表格解析
   content = parseTables(content);
 
-  // 6. 块级元素
+  // 6. 块级元素渲染
   content = content
     .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:1.2em 0;">')
-    .replace(/^###### (.*$)/gm, '<h6>$1</h6>')
-    .replace(/^##### (.*$)/gm, '<h5>$1</h5>')
-    .replace(/^#### (.*$)/gm, '<h4>$1</h4>')
-    .replace(/^### (.*$)/gm, '<h3>$1</h3>')
-    .replace(/^## (.*$)/gm, '<h2>$1</h2>')
-    .replace(/^# (.*$)/gm, '<h1>$1</h1>')
-    .replace(/^&gt;[ ]?(.*$)/gm, '<blockquote>$1</blockquote>')
-    .replace(/^\* (.*$)/gm, '<ul><li>$1</li></ul>')
-    .replace(/^- (.*$)/gm, '<ul><li>$1</li></ul>')
-    .replace(/<\/ul>\n<ul>/g, '');
+    .replace(/^###### (.*$)/gm, `<h6>$1${c('h6')}`)
+    .replace(/^##### (.*$)/gm, `<h5>$1${c('h5')}`)
+    .replace(/^#### (.*$)/gm, `<h4>$1${c('h4')}`)
+    .replace(/^### (.*$)/gm, `<h3>$1${c('h3')}`)
+    .replace(/^## (.*$)/gm, `<h2>$1${c('h2')}`)
+    .replace(/^# (.*$)/gm, `<h1>$1${c('h1')}`)
+    .replace(/^&gt;[ ]?(.*$)/gm, `<blockquote>$1${c('blockquote')}`)
+    .replace(/^\* (.*$)/gm, `<ul><li>$1${c('li')}${c('ul')}`)
+    .replace(/^- (.*$)/gm, `<ul><li>$1${c('li')}${c('ul')}`)
+    .split(`${c('ul')}\n<ul>`).join('');
 
   // 7. 内联格式
   content = content
-    .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/~~(.*?)~~/g, '<del>$1</del>')
+    .replace(/\*\*\*(.*?)\*\*\*/g, `<strong><em>$1${c('em')}${c('strong')}`)
+    .replace(/\*\**(.*?)\*\*/g, `<strong>$1${c('strong')}`)
+    .replace(/\*(.*?)\*/g, `<em>$1${c('em')}`)
+    .replace(/~~(.*?)~~/g, `<del>$1${c('del')}`)
     .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1" style="max-width:100%">')
-    .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank">$1</a>')
-    .replace(/`(.*?)`/g, '<code>$1</code>');
+    .replace(/\[(.*?)\]\((.*?)\)/g, `<a href="$2" target="_blank">$1${c('a')}`)
+    .replace(/`(.*?)`/g, `<code>$1${c('code')}`);
 
-  // 8. 换行处理
-  content = content.replace(/\n/g, "<br>").replace(/&lt;br&gt;/g, "<br>");
+  // 8. 修复行间距过大核心逻辑
+  const blockTags = 'h1|h2|h3|h4|h5|h6|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|pre|hr|div';
+  const lines = content.split('\n');
+  const processedLines = lines.map((line, idx) => {
+    const trimmed = line.trim();
+    if (idx === lines.length - 1) return line;
+    
+    // 如果是空行，不加换行符
+    if (!trimmed) return ""; 
+
+    // 如果是以块级标签结尾，或者该行已经手动包含 <br>，则直接返回
+    if (new RegExp(`${c('(' + blockTags + ')')}$`, 'i').test(trimmed) || trimmed.endsWith('<br>')) {
+      return line;
+    }
+    // 普通文本行，转换换行符为 <br>
+    return line + '<br>';
+  }).filter(l => l !== ""); // 过滤掉多余空行
+
+  content = processedLines.join('\n');
 
   // 9. 还原代码块
-  content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}</code></pre>`);
+  content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}${c('code')}${c('pre')}`);
   
-  // 10. 还原被保护的转义符号
+  // 10. 还原转义符号
   content = content.replace(/%%ESC_(\d+)%%/g, (m, p1) => String.fromCharCode(p1));
   
   return content;
@@ -224,32 +242,33 @@ function md(t) {
 
 /* ================= 布局与样式 ================= */
 function baseStyle() {
+  const c = (tag) => `<\u002f${tag}>`;
   return `
 <style>
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
 body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
 .view-content { min-height: 450px; word-wrap: break-word; font-size: 15.5px; }
-.view-content p, .view-content div { margin: 0.1em 0; }
+.view-content p, .view-content div { margin: 0; }
 .view-content h1, .view-content h2, .view-content h3, 
 .view-content h4, .view-content h5, .view-content h6,
 .view-content table, .view-content pre {
-  margin-top: 0.8em;
-  margin-bottom: 0.03em;
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
 }
 .view-content blockquote { 
   border-left: 4px solid #ddd; 
-  padding: 4px 0 4px 12px; 
-  margin: 0.8em 0 0.03em 0 !important; 
+  padding: 8px 15px; 
+  margin: 1.2em 0; 
   color: #666; 
   background: #f9f9f9; 
 }
 .view-content ul {
-  margin: 0.4em 0;
+  margin: 0.8em 0;
   padding-left: 1.5em;
 }
-.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; }
-.view-content table { border-spacing: 0; border: 1px solid #ddd; }
+.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 1em 0; }
+.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 1em 0; }
 .view-content img { max-width: 100%; height: auto; border-radius: 4px; }
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
@@ -278,37 +297,39 @@ textarea { min-height: 380px; line-height: 1.5; font-family: monospace; resize: 
 }
 
 function loginPage(msg="") {
+  const c = (tag) => `<\u002f${tag}>`;
   return `${baseStyle()}
 <div class="login-wrapper">
   <div class="card" style="width:100%; max-width:320px;">
-    <h2 style="text-align:center; margin-bottom:20px">系统登录</h2>
-    ${msg ? `<p style="color:red;text-align:center;font-size:14px">${msg}</p>` : ""}
+    <h2 style="text-align:center; margin-bottom:20px">系统登录${c('h2')}
+    ${msg ? `<p style="color:red;text-align:center;font-size:14px">${msg}${c('p')}` : ""}
     <form method="post">
       <input type="password" name="password" placeholder="密码" autofocus>
       <button class="btn-primary" style="width:100%;margin-top:16px;padding:12px">确认</button>
     </form>
-  </div>
-</div>`;
+  ${c('div')}
+${c('div')}`;
 }
 
 function indexPage(docs, categories, currentCategory) {
+  const c = (tag) => `<\u002f${tag}>`;
   const allCategories = [{category: ""}, ...categories];
   return `${baseStyle()}
 <div class="container">
   <div class="header">
-    <h2>📄 文档库</h2>
+    <h2>📄 文档库${c('h2')}
     <div style="display:flex; gap:8px">
       <button class="btn-ghost" onclick="toggleLayout()">布局</button>
       <button class="btn-primary" onclick="toggleNew()">+ 新建</button>
-    </div>
-  </div>
+    ${c('div')}
+  ${c('div')}
   <div class="category-filter" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px;">
-    ${allCategories.map(c => {
-      const cat = c.category || "";
+    ${allCategories.map(cat_obj => {
+      const cat = cat_obj.category || "";
       const active = cat === currentCategory ? "active" : "";
-      return `<a href="?category=${encodeURIComponent(cat)}" class="category-btn ${active}">${cat || "全部"}</a>`;
+      return `<a href="?category=${encodeURIComponent(cat)}" class="category-btn ${active}">${cat || "全部"}${c('a')}`;
     }).join("")}
-  </div>
+  ${c('div')}
   <div id="newBox" class="card" style="display:none">
     <form method="post" action="/create">
       <input name="title" placeholder="标题" required>
@@ -318,28 +339,28 @@ function indexPage(docs, categories, currentCategory) {
       <div style="margin-top:14px; display:flex; gap:10px">
         <button class="btn-primary" style="flex:1">保存并预览</button>
         <button type="button" class="btn-ghost" onclick="toggleNew()" style="flex:1">取消</button>
-      </div>
+      ${c('div')}
     </form>
-  </div>
+  ${c('div')}
   <div id="docList" class="list">
     ${docs.map(d => `
       <div class="doc-item">
         <div class="title-line">
-          ${d.pinned === 1 ? `<span style="color:#f59e0b">📌</span>` : ''}
-          <a class="title" href="/view?id=${d.id}">${d.title}</a>
+          ${d.pinned === 1 ? `<span style="color:#f59e0b">📌${c('span')}` : ''}
+          <a class="title" href="/view?id=${d.id}">${d.title}${c('a')}
           <div class="tags">
-            ${(d.tags||"").split(",").filter(Boolean).slice(0,2).map(t => `<span class="tag">${t.trim()}</span>`).join("")}
-          </div>
-        </div>
+            ${(d.tags||"").split(",").filter(Boolean).slice(0,2).map(t => `<span class="tag">${t.trim()}${c('span')}`).join("")}
+          ${c('div')}
+        ${c('div')}
         <div class="actions">
-          <a href="/pin?id=${d.id}">${d.pinned === 1 ? '⭐' : '☆'}</a>
-          <a href="/edit?id=${d.id}">✏️</a>
-          <a href="/delete?id=${d.id}" onclick="return confirm('确定删除？')">🗑️</a>
-        </div>
-      </div>
+          <a href="/pin?id=${d.id}">${d.pinned === 1 ? '⭐' : '☆'}${c('a')}
+          <a href="/edit?id=${d.id}">✏️${c('a')}
+          <a href="/delete?id=${d.id}" onclick="return confirm('确定删除？')">🗑️${c('a')}
+        ${c('div')}
+      ${c('div')}
     `).join("")}
-  </div>
-</div>
+  ${c('div')}
+${c('div')}
 <script>
 let isGrid = false;
 function toggleNew() {
@@ -354,27 +375,29 @@ function toggleLayout() {
 }
 
 function viewPage(d) {
+  const c = (tag) => `<\u002f${tag}>`;
   return `${baseStyle()}
 <div class="container">
   <div class="card">
-    <h1 style="margin:0 0 10px 0; font-size:1.6rem;">${d.title}</h1>
+    <h1 style="margin:0 0 10px 0; font-size:1.6rem;">${d.title}${c('h1')}
     <div style="font-size:13px; color:#666; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
       ${d.category ? `分类: ${d.category}` : '未分类'}
-    </div>
-    <div class="view-content">${md(d.content)}</div>
+    ${c('div')}
+    <div class="view-content">${md(d.content)}${c('div')}
     <div style="margin-top:25px; border-top:1px solid #eee; padding-top:15px; display:flex; gap:15px; align-items:center;">
-      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:500;">← 返回首页</a>
-      <a href="/edit?id=${d.id}" style="color:var(--primary); text-decoration:none; font-weight:500;">✏️ 编辑文档</a>
-    </div>
-  </div>
-</div>`;
+      <a href="/" style="color:var(--primary); text-decoration:none; font-weight:500;">← 返回首页${c('a')}
+      <a href="/edit?id=${d.id}" style="color:var(--primary); text-decoration:none; font-weight:500;">✏️ 编辑文档${c('a')}
+    ${c('div')}
+  ${c('div')}
+${c('div')}`;
 }
 
 function editPage(d) {
+  const c = (tag) => `<\u002f${tag}>`;
   return `${baseStyle()}
 <div class="container">
   <div class="card">
-    <h3 style="margin-top:0">编辑</h3>
+    <h3 style="margin-top:0">编辑${c('h3')}
     <form method="post">
       <input name="title" value="${d.title}" required>
       <input name="category" value="${d.category || ''}">
@@ -383,10 +406,10 @@ function editPage(d) {
       <div style="margin-top:16px; display:flex; gap:12px">
         <button class="btn-primary" style="flex:2; padding:12px">保存并预览</button>
         <button type="button" class="btn-ghost" onclick="history.back()" style="flex:1">取消并返回</button>
-      </div>
+      ${c('div')}
     </form>
-  </div>
-</div>`;
+  ${c('div')}
+${c('div')}`;
 }
 
 function escape(s = "") {
