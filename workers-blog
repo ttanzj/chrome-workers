@@ -124,7 +124,6 @@ function parseTables(text) {
   const lines = text.split('\n');
   let result = [];
   let i = 0;
-
   while (i < lines.length) {
     const trimmedLine = lines[i].trim();
     if (trimmedLine.startsWith('|') && i + 1 < lines.length && lines[i+1].includes('|') && lines[i+1].includes('-')) {
@@ -133,16 +132,13 @@ function parseTables(text) {
         tableLines.push(lines[i]);
         i++;
       }
-
       let tableHtml = `<table style="border-collapse:collapse;width:auto;max-width:100%;margin:0.5em 0;background:#fff;display:table;">`;
       const parseRow = (row) => row.split('|').filter((c, idx, arr) => (idx !== 0 && idx !== arr.length - 1) || c.trim());
-      
       tableHtml += `<thead><tr>`;
       parseRow(tableLines[0]).forEach(c => {
         tableHtml += `<th style="border:1px solid #ddd;padding:6px 10px;background:#f8fafc;text-align:center;font-weight:550;">${c.trim()}</th>`;
       });
       tableHtml += `</tr></thead><tbody>`;
-      
       for (let j = 2; j < tableLines.length; j++) {
         tableHtml += `<tr>`;
         parseRow(tableLines[j]).forEach(c => {
@@ -164,16 +160,10 @@ function parseTables(text) {
 function md(t) {
   if (!t) return "";
   const c = (tag) => `<\u002f${tag}>`;
-
-  // 1. 保护转义字符
   let content = t.replace(/\\([*#_>`[\]()!|~-]+)/g, (m, p1) => {
     return p1.split('').map(char => `%%ESC_${char.charCodeAt(0)}%%`).join('');
   });
-
-  // 2. 先进行全局转义
   content = escape(content);
-
-  // 3. 还原特定实体，确保 &emsp; 这种不在正则处理中失效
   content = content.replace(/&amp;emsp;/g, '&emsp;');
   content = content.replace(/&lt;br\s*\/?&gt;/gi, '<br>');
 
@@ -203,9 +193,13 @@ function md(t) {
     .replace(/\*\**(.*?)\*\*/g, `<strong>$1${c('strong')}`)
     .replace(/\*(.*?)\*/g, `<em>$1${c('em')}`)
     .replace(/~~(.*?)~~/g, `<del>$1${c('del')}`)
-    .replace(/!\[(.*?)\]\((.*?)\)/g, '<img src="$2" alt="$1">')
+    .replace(/!\[(.*?)\]\((.*?)\)/g, (m, alt, src) => {
+      const isFull = alt.startsWith('#');
+      const className = isFull ? 'img-full' : 'img-float';
+      const cleanAlt = isFull ? alt.substring(1) : alt;
+      return `<img src="${src}" alt="${cleanAlt}" class="${className}">`;
+    })
     .replace(/\[(.*?)\]\((.*?)\)/g, `<a href="$2" target="_blank">$1${c('a')}`)
-    // 为单行代码添加类名以方便独立控制样式
     .replace(/`(.*?)`/g, `<code class="inline-code">$1${c('code')}`);
 
   const blockTags = 'h1|h2|h3|h4|h5|h6|ul|ol|li|blockquote|table|thead|tbody|tr|td|th|pre|hr|div';
@@ -230,45 +224,35 @@ function baseStyle() {
   return `
 <style>
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
-body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; font-size: 14.5px;letter-spacing: -0.01em; }
+body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; font-size: 14.5px; letter-spacing: -0.01em; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
 strong, b, h1, h2, h3, h4, h5, h6, .title, .header h2 { font-weight: 550; }
 
 .view-content { min-height: 450px; word-wrap: break-word; }
+.view-content::after { content: ""; display: table; clear: both; }
 .view-content p, .view-content div { margin: 0; }
 
-/* 标题优化：行高随字号调整，减少上下间隙 */
 .view-content h1 { font-size: 1.45rem; margin: 0.5em 0 0.2em 0; line-height: 1.2; }
 .view-content h2 { font-size: 1.25rem; margin: 0.5em 0 0.2em 0; line-height: 1.2; }
 .view-content h3 { font-size: 1.1rem; margin: 0.5em 0 0.2em 0; line-height: 1.2; }
 .view-content h4, .view-content h5, .view-content h6 { margin: 0.4em 0 0.1em 0; line-height: 1.2; }
 
-/* 直线优化：大幅压缩下方留白 */
 .view-content hr { border: none; border-top: 1px solid #ddd; margin: 0.2em 0 0.05em 0; }
-
 .view-content blockquote { border-left: 4px solid #ddd; padding: 4px 15px; margin: 0.4em 0; color: #666; background: #f9f9f9; }
 .view-content ul { margin: 0.3em 0; padding-left: 1.5em; }
 
-/* 代码引用样式：字体一致并添加阴影 */
-.view-content code.inline-code { 
-  font-family: inherit !important; 
-  background: #f1f5f9; 
-  padding: 2px 6px; 
-  border-radius: 4px; 
-  font-size: inherit;
-  box-shadow: 1px 1px 3px rgba(0,0,0,0.12);
-  margin: 0 2px;
-}
-
-/* 多行代码块：保持等宽字体 */
+.view-content code.inline-code { font-family: inherit !important; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: inherit; box-shadow: 1px 1px 3px rgba(0,0,0,0.12); margin: 0 2px; }
 .view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.6em 0; font-size: 13.5px; }
 
 .view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.4em 0; }
-.view-content img { max-width: 100%; height: auto; border-radius: 4px; display: block; margin: 0.2em 0; }
 
-/* 换行控制 */
+/* 图片逻辑 */
+.view-content img { height: auto; border-radius: 4px; }
+.view-content img.img-float { max-width: 45%; float: left; margin: 5px 15px 10px 0; }
+.view-content img.img-full { display: block; max-width: 100%; margin: 15px auto; float: none; }
+
 .view-content br { content: ""; display: block; margin-top: 0px; }
-.view-content br.blank-line { margin-top: 8px; }
+.view-content br.blank-line { margin-top: 8px; clear: both; }
 
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
@@ -292,7 +276,7 @@ textarea { min-height: 380px; line-height: 1.5; font-family: monospace; resize: 
 .grid .actions { margin-top: auto; padding-top: 12px; display: flex; justify-content: center; gap: 20px; }
 .category-btn { padding: 5px 12px; border-radius: 20px; font-size: 12.5px; background: #fff; border: 1px solid #e2e8f0; text-decoration: none; color: inherit; }
 .category-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
-@media (max-width: 600px) { .container { padding: 10px; } .grid { grid-template-columns: 1fr 1fr; gap: 8px; } textarea { min-height: 300px; font-size: 14px; } }
+@media (max-width: 600px) { .container { padding: 10px; } .grid { grid-template-columns: 1fr 1fr; gap: 8px; } textarea { min-height: 300px; font-size: 14px; } .view-content img.img-float { float: none; max-width: 100%; margin: 10px 0; } }
 </style>`;
 }
 
