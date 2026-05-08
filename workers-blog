@@ -181,7 +181,7 @@ function md(t) {
   content = parseTables(content);
 
   content = content
-    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:0.4em 0;">') // 减少直线留空
+    .replace(/^\*\*\*$/gm, '<hr style="border:none;border-top:1px solid #ddd;margin:0.4em 0;">')
     .replace(/^###### (.*$)/gm, `<h6>$1${c('h6')}`)
     .replace(/^##### (.*$)/gm, `<h5>$1${c('h5')}`)
     .replace(/^#### (.*$)/gm, `<h4>$1${c('h4')}`)
@@ -207,10 +207,16 @@ function md(t) {
   const processedLines = lines.map((line, idx) => {
     const trimmed = line.trim();
     if (idx === lines.length - 1) return line;
-    if (trimmed === "") return ""; 
+    
+    // 如果是空行，转换为一个占位的 <br>，用于保留手动换行
+    if (trimmed === "") return '<br class="blank-line">'; 
+    
+    // 如果已经是块级标签结尾，不需要加换行
     if (new RegExp(`${c('(' + blockTags + ')')}$`, 'i').test(trimmed) || trimmed.endsWith('<br>')) return line;
+    
+    // 普通行尾加换行
     return line + '<br>';
-  }).filter(l => l !== "");
+  });
   
   content = processedLines.join('\n');
   content = content.replace(/%%CODEBLOCK_(\d+)%%/g, (m, p1) => `<pre><code>${codes[p1]}${c('code')}${c('pre')}`);
@@ -224,26 +230,23 @@ function baseStyle() {
   return `
 <style>
 :root { --primary: #2563eb; --bg: #f4f6f8; --text: #1f2937; }
-body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.4; font-size: 14.5px; }
+body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; line-height: 1.5; font-size: 14.5px; }
 .container { max-width: 1000px; margin: 0 auto; padding: 20px; box-sizing: border-box; }
-
-/* 字体权重修正：加粗设为550 */
 strong, b, h1, h2, h3, h4, h5, h6, .title, .header h2 { font-weight: 550; }
-
 .view-content { min-height: 450px; word-wrap: break-word; }
 .view-content p, .view-content div { margin: 0; }
-/* 调整标题：缩小字号并减少上下间距 */
-.view-content h1 { font-size: 1.45rem; margin: 0.5em 0 0.2em 0; }
-.view-content h2 { font-size: 1.25rem; margin: 0.5em 0 0.2em 0; }
+.view-content h1 { font-size: 1.45rem; margin: 0.6em 0 0.3em 0; }
+.view-content h2 { font-size: 1.25rem; margin: 0.6em 0 0.3em 0; }
 .view-content h3 { font-size: 1.1rem; margin: 0.5em 0 0.2em 0; }
-.view-content h4, .view-content h5, .view-content h6 { margin: 0.4em 0 0.1em 0; }
+.view-content blockquote { border-left: 4px solid #ddd; padding: 4px 15px; margin: 0.6em 0; color: #666; background: #f9f9f9; }
+.view-content ul { margin: 0.4em 0; padding-left: 1.5em; }
+.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.8em 0; font-size: 13.5px; }
+.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.6em 0; }
+.view-content img { max-width: 100%; height: auto; border-radius: 4px; margin: 0.5em 0; }
 
-.view-content blockquote { border-left: 4px solid #ddd; padding: 4px 15px; margin: 0.4em 0; color: #666; background: #f9f9f9; }
-.view-content ul { margin: 0.3em 0; padding-left: 1.5em; }
-.view-content pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: monospace; margin: 0.6em 0; font-size: 13.5px; }
-.view-content table { border-spacing: 0; border: 1px solid #ddd; margin: 0.4em 0; }
-.view-content img { max-width: 100%; height: auto; border-radius: 4px; }
-.view-content br { content: ""; display: block; margin-top: 2px; }
+/* 关键修复：控制普通换行和手动空行的间距 */
+.view-content br { content: ""; display: block; margin-top: 0px; } 
+.view-content br.blank-line { margin-top: 10px; } /* 手动空行的高度，可根据喜好调整 */
 
 .login-wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; width: 100%; box-sizing: border-box; }
 .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
@@ -374,10 +377,10 @@ function editPage(d) {
   <div class="card">
     <h3 style="margin-top:0">编辑${c('h3')}
     <form method="post">
-      <input name="title" value="${d.title}" required>
-      <input name="category" value="${d.category || ''}">
-      <input name="tags" value="${d.tags || ''}">
-      <textarea name="content">${d.content}</textarea>
+      <input name="title" value="${escape(d.title)}" required>
+      <input name="category" value="${escape(d.category || '')}">
+      <input name="tags" value="${escape(d.tags || '')}">
+      <textarea name="content">${escape(d.content)}</textarea>
       <div style="margin-top:16px; display:flex; gap:12px">
         <button class="btn-primary" style="flex:2; padding:12px">保存并预览</button>
         <button type="button" class="btn-ghost" onclick="history.back()" style="flex:1">取消并返回</button>
