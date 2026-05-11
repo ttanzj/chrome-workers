@@ -18,7 +18,7 @@ export default {
     if (url.pathname === "/api/login" && request.method === "POST") {
       if (await request.text() === env.GALLERY_PASSWORD) {
         return new Response("ok", { 
-          headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly; SameSite=Lax" } 
+          headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly;SameSite=Lax"} 
         });
       }
       return new Response("err", { status: 403 });
@@ -56,9 +56,11 @@ export default {
     }
 
     // 2.3 权限拦截：未登录则全部跳转 /login
-    if (!isAuthed(request)) {
-      return Response.redirect(url.origin + "/login", 302);
-    }
+   // 2.3 权限拦截：未登录且“不是图片请求”时才跳转登录
+const isImageRequest = url.pathname.startsWith("/i/");
+if (!isAuthed(request) && !isImageRequest) {
+  return Response.redirect(url.origin + "/login", 302);
+}
 
     /* ================= 3. 核心路由：图片读取 (已登录后可见) ================= */
     if (url.pathname.startsWith("/i/")) {
