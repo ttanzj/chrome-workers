@@ -18,7 +18,7 @@ export default {
     if (url.pathname === "/api/login" && request.method === "POST") {
       if (await request.text() === env.GALLERY_PASSWORD) {
         return new Response("ok", { 
-          headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" } 
+          headers: { "Set-Cookie": "gallery_auth=1; Path=/; HttpOnly; SameSite=Lax" } 
         });
       }
       return new Response("err", { status: 403 });
