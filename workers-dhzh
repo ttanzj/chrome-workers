@@ -1,0 +1,268 @@
+export default {
+    async fetch(request) {
+        const url = new URL(request.url);
+        
+        if (url.pathname === "/" || url.pathname === "/index.html") {
+            return new Response(HTML, {
+                headers: {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Cache-Control": "no-cache"
+                }
+            });
+        }
+
+        return new Response("Not Found", { status: 404 });
+    }
+};
+
+const HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>导航书签转换器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-5xl mx-auto p-6">
+        <div class="bg-white rounded-3xl shadow-2xl p-8">
+            <div class="flex justify-between items-center mb-10">
+                <div>
+                    <h1 class="text-4xl font-bold text-gray-900">导航书签转换器</h1>
+                    <p class="text-gray-600 mt-2">Read • SunPanel • Workers 三格式互转工具</p>
+                </div>
+                <div class="text-sm bg-emerald-100 text-emerald-700 px-4 py-2 rounded-2xl">Cloudflare Workers</div>
+            </div>
+
+            <div class="mb-12">
+                <h2 class="text-2xl font-semibold mb-4 flex items-center gap-3">📥 导入文件</h2>
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+                    <div class="md:col-span-3">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">导入格式</label>
+                        <select id="importType" class="w-full px-4 py-3 border border-gray-300 rounded-2xl">
+                            <option value="read">Read (Legado导航)</option>
+                            <option value="sunpanel">SunPanel</option>
+                            <option value="workers">Workers (testUser)</option>
+                        </select>
+                    </div>
+                    <div class="md:col-span-9">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">选择文件（支持无扩展名）</label>
+                        <div class="flex gap-3">
+                            <input type="file" id="fileInput" accept="*/*" 
+                                   class="flex-1 file:mr-4 file:py-3 file:px-6 file:rounded-2xl file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+                            <button onclick="handleImport()" 
+                                   class="px-10 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-medium">
+                                导入解析
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div id="importStatus" class="mt-4 min-h-[28px] text-sm"></div>
+            </div>
+
+            <div id="previewSection" class="hidden mb-12">
+                <h2 class="text-2xl font-semibold mb-4">预览内容 <span id="totalCount" class="text-blue-600"></span></h2>
+                <div id="previewContent" class="max-h-[420px] overflow-auto border border-gray-200 rounded-2xl p-5 bg-gray-50 text-sm"></div>
+            </div>
+
+            <div>
+                <h2 class="text-2xl font-semibold mb-4 flex items-center gap-3">📤 导出文件</h2>
+                <div class="flex flex-wrap items-end gap-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">导出格式</label>
+                        <select id="exportType" class="w-72 px-4 py-3 border border-gray-300 rounded-2xl">
+                            <option value="read">Read - read.json</option>
+                            <option value="sunpanel">SunPanel</option>
+                            <option value="workers">Workers - testUser.txt</option>
+                        </select>
+                    </div>
+                    <button onclick="handleExport()" 
+                            class="px-10 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-medium">
+                        生成并下载
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentData = null;
+
+        function normalizeData(source, type) {
+            let groups = [];
+            if (type === 'read') {
+                const lines = (source.sortUrl || '').split(/\\\\n|\\\\r\\\\n|\\\\r/);
+                let currentGroup = { title: '默认分组', items: [] };
+                lines.forEach(line => {
+                    line = line.trim();
+                    if (!line) return;
+                    if (line.includes('::') || /^[\\uD83D\\uDCA0\\uD83D\\uDC40\\uD83D\\uDEE0\\uD83C\\uDF84]/.test(line)) {
+                        if (currentGroup.items.length > 0) groups.push(currentGroup);
+                        const title = line.split('::')[0].replace(/^[\\uD83D\\uDCA0\\uD83D\\uDC40\\uD83D\\uDEE0\\uD83C\\uDF84]/, '').trim();
+                        currentGroup = { title: title || '未命名', items: [] };
+                    }
+                    const urlMatch = line.match(/(https?:\\/\\/[^\\s【]+)/);
+                    const iconMatch = line.match(/【(.*?)】/);
+                    const titleMatch = line.match(/《(.*?)》/);
+                    const descMatch = line.match(/◎(.*?)◎/);
+                    if (urlMatch && titleMatch) {
+                        currentGroup.items.push({
+                            name: titleMatch[1],
+                            url: urlMatch[1],
+                            icon: iconMatch ? iconMatch[1] : '',
+                            desc: descMatch ? descMatch[1] : ''
+                        });
+                    }
+                });
+                if (currentGroup.items.length > 0) groups.push(currentGroup);
+            } else if (type === 'sunpanel') {
+                (source.icons || []).forEach(g => {
+                    groups.push({
+                        title: g.title,
+                        items: (g.children || []).map(item => ({
+                            name: item.title, url: item.url,
+                            icon: item.icon?.src || '', desc: item.description || ''
+                        }))
+                    });
+                });
+            } else if (type === 'workers') {
+                const map = {};
+                (source.links || []).forEach(link => {
+                    const cat = link.category || '未分类';
+                    if (!map[cat]) map[cat] = [];
+                    map[cat].push({
+                        name: link.name, url: link.url,
+                        icon: link.icon || '', desc: link.tips || ''
+                    });
+                });
+                Object.keys(map).forEach(key => groups.push({title: key, items: map[key]}));
+            }
+            return { groups };
+        }
+
+        function convertToRead(data) {
+            let sortUrl = '';
+            data.groups.forEach(group => {
+                sortUrl += "\\uD83D\\uDCA0 " + group.title + "::\\n";
+                group.items.forEach(item => {
+                    sortUrl += item.url + "【" + item.icon + "】《" + item.name + "》◎" + item.desc + "◎\\n";
+                });
+                sortUrl += '\\n';
+            });
+            return {
+                articleStyle: 0, customOrder: 9, enableJs: true, enabled: true,
+                lastUpdateTime: Date.now(), sortUrl: sortUrl.trim(),
+                sourceName: "我的导航", sourceGroup: "导航"
+            };
+        }
+
+        function convertToSunPanel(data) {
+            const icons = data.groups.map((group, idx) => ({
+                title: group.title, sort: idx*10,
+                children: group.items.map((item, i) => ({
+                    icon: {itemType:2, src: item.icon||'', text: "", backgroundColor: ""},
+                    sort: i, title: item.name, url: item.url,
+                    description: item.desc, openMethod:2, cardType:1,
+                    lanUrl: "", backgroundColor: "#2a2a2a6b", expandParam: {}
+                }))
+            }));
+            return {
+                version: 1, appName: "Sun-Panel-Config",
+                exportTime: new Date().toISOString().slice(0,19).replace('T',' '),
+                appVersion: "1.8.1",
+                md5: "",
+                icons: icons
+            };
+        }
+
+        function convertToWorkers(data) {
+            const links = [];
+            const categories = {};
+            data.groups.forEach(group => {
+                categories[group.title] = [];
+                group.items.forEach(item => {
+                    const obj = {
+                        name: item.name, url: item.url, tips: item.desc,
+                        icon: item.icon, category: group.title, isPrivate: false
+                    };
+                    links.push(obj);
+                    categories[group.title].push(obj);
+                });
+            });
+            return { links, categories };
+        }
+
+        async function handleImport() {
+            const file = document.getElementById('fileInput').files[0];
+            const type = document.getElementById('importType').value;
+            const status = document.getElementById('importStatus');
+            
+            if (!file) return status.innerHTML = '<span class="text-red-500">❌ 请先选择文件</span>';
+            
+            try {
+                const text = await file.text();
+                const source = JSON.parse(text);
+                currentData = normalizeData(source, type);
+                
+                let html = '', count = 0;
+                currentData.groups.forEach(g => {
+                    html += '<div class="mb-6"><div class="font-bold text-lg mb-3">' + g.title + ' (' + g.items.length + ')</div>';
+                    g.items.forEach(item => {
+                        count++;
+                        html += '<div class="flex gap-3 py-2 px-3 hover:bg-white rounded-xl">' +
+                            (item.icon ? '<img src="' + item.icon + '" class="w-6 h-6 rounded">' : '<div class="w-6 h-6 bg-gray-200 rounded"></div>') +
+                            '<div><a href="' + item.url + '" target="_blank" class="text-blue-600">' + item.name + '</a><div class="text-xs text-gray-500">' + item.url + '</div></div>' +
+                        '</div>';
+                    });
+                    html += '</div>';
+                });
+                
+                document.getElementById('previewContent').innerHTML = html;
+                document.getElementById('totalCount').innerHTML = '共 <b>' + count + '</b> 个链接';
+                document.getElementById('previewSection').classList.remove('hidden');
+                status.innerHTML = '<span class="text-emerald-600">✅ 导入成功！共 ' + count + ' 个链接</span>';
+            } catch (e) {
+                console.error(e);
+                status.innerHTML = '<span class="text-red-500">❌ 解析失败：' + e.message + '</span>';
+            }
+        }
+
+        function handleExport() {
+            if (!currentData) return alert('请先导入文件！');
+            
+            const type = document.getElementById('exportType').value;
+            let result, filename, mimeType;
+            
+            if (type === 'read') {
+                result = convertToRead(currentData);
+                filename = 'read.json';
+                mimeType = 'application/json';
+            } else if (type === 'sunpanel') {
+                result = convertToSunPanel(currentData);
+                const date = new Date();
+                const ts = date.getFullYear() + 
+                           String(date.getMonth() + 1).padStart(2, '0') + 
+                           String(date.getDate()).padStart(2, '0') + 
+                           String(date.getHours()).padStart(2, '0') + 
+                           String(date.getMinutes()).padStart(2, '0');
+                filename = 'SunPanel-Data' + ts + '.sun-panel.json';
+                mimeType = 'application/json';
+            } else {
+                result = convertToWorkers(currentData);
+                filename = 'testUser.txt';
+                mimeType = 'text/plain';
+            }
+            
+            const content = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+            const blob = new Blob([content], {type: mimeType});
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+        }
+    </script>
+</body>
+</html>`;
