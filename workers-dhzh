@@ -84,18 +84,24 @@ export default {
             let groups = [];
             if (type === 'read') {
                 const sortUrl = source.sortUrl || "";
+                // 按双换行符分割分类块
                 const groupBlocks = sortUrl.split(/\\n\\s*\\n/);
                 groupBlocks.forEach(block => {
                     const lines = block.trim().split('\\n');
                     if (lines.length === 0) return;
+                    
                     let groupTitle = "未分类";
                     let items = [];
+                    
                     lines.forEach(line => {
                         line = line.trim();
                         if (!line) return;
+                        
                         if (line.includes('::')) {
+                            // 提取分类名：移除Emoji并截取 :: 前的内容
                             groupTitle = line.split('::')[0].replace(/[\\u2700-\\u2bef\\ud83c\\ud83d\\ud83e\\u2100-\\u2dff]/g, '').trim();
                         } else {
+                            // 匹配卡片信息
                             const cardMatches = line.match(/(https?:\\/\\/[^\\s【《]+(【.*?】)?(《.*?》)?(◎.*?◎)?)/g);
                             if (cardMatches) {
                                 cardMatches.forEach(card => {
@@ -135,7 +141,6 @@ export default {
             return { groups };
         }
 
-        // 分类图标适配逻辑
         function getIcon(title) {
             const iconMap = {
                 "导": "💠 ", "工": "🛠️ ", "设": "🛠️ ", "存": "🎄", 
@@ -156,7 +161,22 @@ export default {
                 let groupStr = getIcon(group.title) + group.title + "::";
                 let itemsStr = group.items.map(item => {
                     const cleanDesc = (item.desc || '').replace(/\\s+/g, '');
-                    return item.url + "【" + (item.icon || '') + "】《" + item.name + "》◎" + cleanDesc + "◎";
+                    
+                    // 处理链接末尾 /
+                    let finalUrl = item.url.trim();
+                    if (!finalUrl.endsWith('/')) {
+                        finalUrl += '/';
+                    }
+                    
+                    // 处理图标链接
+                    let finalIcon = (item.icon || '').trim();
+                    if (!finalIcon) {
+                        finalIcon = finalUrl + 'favicon.ico';
+                        // 确保没有双斜杠 (针对已存在的末尾斜杠情况)
+                        finalIcon = finalIcon.replace(/([^:])\\/\\//g, '$1/');
+                    }
+
+                    return finalUrl + "【" + finalIcon + "】《" + item.name + "》◎" + cleanDesc + "◎";
                 }).join(" ");
                 sortUrlArr.push(groupStr + itemsStr);
             });
