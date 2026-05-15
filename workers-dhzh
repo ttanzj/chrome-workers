@@ -23,7 +23,7 @@ export default {
                     <h1 class="text-2xl sm:text-4xl font-bold text-gray-900">导航书签转换器</h1>
                     <p class="text-gray-500 text-sm mt-1">Read • SunPanel • Workers 三格式互转</p>
                 </div>
-                <div class="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full font-medium">Cloudflare Workers</div>
+                <div class="text-xs bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full font-medium">Legado不能转其他</div>
             </div>
 
             <!-- 📥 导入区域 -->
@@ -91,8 +91,11 @@ export default {
 
         function normalizeData(source, type) {
             let groups = [];
+            // 如果Read格式转入时是数组，取第一项
+            let rawSource = (type === 'read' && Array.isArray(source)) ? source[0] : source;
+            
             if (type === 'read') {
-                const sortUrl = source.sortUrl || "";
+                const sortUrl = rawSource.sortUrl || "";
                 const groupBlocks = sortUrl.split(/\\n\\s*\\n/);
                 groupBlocks.forEach(block => {
                     const lines = block.trim().split('\\n');
@@ -120,7 +123,7 @@ export default {
                     if (items.length > 0) groups.push({ title: groupTitle, items });
                 });
             } else if (type === 'sunpanel') {
-                (source.icons || []).forEach(g => {
+                (rawSource.icons || []).forEach(g => {
                     groups.push({
                         title: g.title,
                         items: (g.children || []).map(item => ({
@@ -131,7 +134,7 @@ export default {
                 });
             } else if (type === 'workers') {
                 const map = {};
-                (source.links || []).forEach(link => {
+                (rawSource.links || []).forEach(link => {
                     const cat = link.category || '未分类';
                     if (!map[cat]) map[cat] = [];
                     map[cat].push({
@@ -177,7 +180,13 @@ export default {
                 }).join(" ");
                 sortUrlArr.push(groupStr + itemsStr);
             });
-            return {
+
+            // 生成7位随机字符串
+            const randomStr = Math.random().toString(36).substring(2, 9);
+            const randomUrl = "https://" + randomStr + ".com";
+
+            // 返回包裹在数组中的对象
+            return [{
                 "articleStyle": 0, "customOrder": 9, "enableJs": true, "enabled": true, "enabledCookieJar": false,
                 "header": "{\\n    'User-Agent': 'Mozilla/5.0 ... SearchCraft/3.9.2 (Baidu; P1 11) '\\n}",
                 "lastUpdateTime": 0, "loadWithBaseUrl": true,
@@ -185,8 +194,8 @@ export default {
                 "ruleImage": "$.src", "ruleLink": "$.index\\n@js:\\nif(!result.match(/^http/) && !result.match(/\\\\d+、\\\\d+、/)){\\nresult=\\"https://www.coolapk.com/link?url=\\"+encodeURIComponent(result)\\n}else{result=result}",
                 "rulePubDate": "$.intro", "ruleTitle": "$.text", "singleUrl": false,
                 "sortUrl": sortUrlArr.join("\\n\\n"), "sourceGroup": "转入导航", "sourceIcon": "https://tk.ttanzj.us.ci/i/131/OIP.webp",
-                "sourceName": "阅读导航", "sourceUrl": ""
-            };
+                "sourceName": "阅读导航", "sourceUrl": randomUrl
+            }];
         }
 
         function convertToSunPanel(data) {
