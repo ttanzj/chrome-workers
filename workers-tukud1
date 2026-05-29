@@ -55,12 +55,11 @@ export default {
 </html>`);
     }
 
-    // 2.3 权限拦截：未登录则全部跳转 /login
-   // 2.3 权限拦截：未登录且“不是图片请求”时才跳转登录
-const isImageRequest = url.pathname.startsWith("/i/");
-if (!isAuthed(request) && !isImageRequest) {
-  return Response.redirect(url.origin + "/login", 302);
-}
+    // 2.3 权限拦截：未登录且“不是图片请求”时才跳转登录
+    const isImageRequest = url.pathname.startsWith("/i/");
+    if (!isAuthed(request) && !isImageRequest) {
+      return Response.redirect(url.origin + "/login", 302);
+    }
 
     /* ================= 3. 核心路由：图片读取 (已登录后可见) ================= */
     if (url.pathname.startsWith("/i/")) {
@@ -326,7 +325,7 @@ if (!isAuthed(request) && !isImageRequest) {
     }; inp.click();
   }
   function show(u) { document.getElementById("modalImg").src = u; document.getElementById("modal").style.display = "flex"; }
-  function copy(u) { navigator.clipboard.writeText(u); alert("已复制"); }
+  function copy(u) { navigator.clipboard.writeText(u); }
   async function del(p) { 
     if(confirm("确定删除？")) { 
       const res = await fetch("/api/delete",{method:"POST",body:p}).then(r => r.json());
