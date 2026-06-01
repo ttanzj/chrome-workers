@@ -11,6 +11,13 @@ function jsonResponse(data, status = 200) {
   });
 }
 
+// 统一的密码校验辅助函数
+function checkAuth(request, env) {
+  const correctPassword = env.ACCESS_PASSWORD || 'admin123';
+  const authHeader = request.headers.get('Authorization');
+  return authHeader === correctPassword;
+}
+
 function getStoragePrefix(env) {
   let prefix = (env.STORAGE_PREFIX || 'notepages').trim();
   return prefix.endsWith('/') ? prefix : prefix + '/';
@@ -136,6 +143,8 @@ async function saveIndexList(env, type, list) {
 }
 
 async function handleNotes(request, env) {
+  if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
+  
   const url = new URL(request.url);
   const path = url.pathname.replace('/api/notes', '');
 
@@ -235,6 +244,8 @@ async function handleNotes(request, env) {
 }
 
 async function handleFiles(request, env) {
+  if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
+
   const url = new URL(request.url);
   const path = url.pathname.replace('/api/files', '');
 
@@ -282,6 +293,7 @@ async function handleFiles(request, env) {
   return jsonResponse({ error: 'Method not allowed' }, 405);
 }
 
+// 保持独立下载逻辑无视密码限制
 async function handleDownload(request, env) {
   const url = new URL(request.url);
   const fileId = url.pathname.split('/').pop();
@@ -309,6 +321,15 @@ const HTML = `<!DOCTYPE html>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; }
         
+        /* 锁屏登录弹窗样式 */
+        .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #f0f2f5; display: flex; justify-content: center; align-items: center; z-index: 9999; }
+        .login-card { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); width: 90%; max-width: 360px; text-align: center; }
+        .login-card h2 { font-size: 22px; margin-bottom: 8px; color: #333; }
+        .login-card p { font-size: 14px; color: #888; margin-bottom: 20px; }
+        .password-input { width: 100%; padding: 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 16px; margin-bottom: 16px; outline: none; text-align: center; }
+        .password-input:focus { border-color: #1890ff; }
+        
+        /* 布局基本样式 */
         .header { background: #fff; border-bottom: 1px solid #e0e0e0; }
         .header-container { max-width: 1200px; margin: 0 auto; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
         .header h1 { font-size: 20px; color: #333; }
@@ -323,7 +344,6 @@ const HTML = `<!DOCTYPE html>
         
         .content { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
         
-        /* 文件上传拖拽框与进度条样式优化 */
         .upload-box { background: #fff; border: 2px dashed #d9d9d9; padding: 40px; text-align: center; border-radius: 8px; margin-bottom: 16px; cursor: pointer; position: relative; overflow: hidden; }
         .upload-box:hover { border-color: #1890ff; }
         .upload-box.uploading { pointer-events: none; border-color: #1890ff; background: #fafafa; }
@@ -379,9 +399,19 @@ const HTML = `<!DOCTYPE html>
     </style>
 </head>
 <body>
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-card">
+            <h2>🔒 访问受限</h2>
+            <p>请输入安全密码进入 NotePages</p>
+            <input type="password" class="password-input" id="passwordInput" placeholder="输入密码并回车...">
+            <button class="btn btn-primary" style="width:100%; padding:10px;" id="loginBtn">确认验证</button>
+        </div>
+    </div>
+
     <div class="header">
         <div class="header-container">
             <h1>📁 NotePages</h1>
+            <button class="btn btn-default" id="logoutBtn">🔐 注销登录</button>
         </div>
     </div>
     <div class="nav">
@@ -444,6 +474,14 @@ const HTML = `<!DOCTYPE html>
         const API_BASE = '';
         
         function $(id) { return document.getElementById(id); }
+
+        // 获取经过认证封装的通用带有密码 Header 的 fetch 请求
+        function authenticatedFetch(url, options = {}) {
+            const pwd = localStorage.getItem('notepages_pwd') || '';
+            options.headers = options.headers || {};
+            options.headers['Authorization'] = pwd;
+            return fetch(url, options);
+        }
         
         function switchTab(tab) {
             state.activeTab = tab;
@@ -456,7 +494,8 @@ const HTML = `<!DOCTYPE html>
         
         async function loadNotes() {
             try {
-                const res = await fetch(API_BASE + '/api/notes');
+                const res = await authenticatedFetch(API_BASE + '/api/notes');
+                if (res.status === 401) { triggerLogout(); return; }
                 if (res.ok) {
                     state.notes = await res.json();
                     renderNotes();
@@ -466,7 +505,8 @@ const HTML = `<!DOCTYPE html>
         
         async function loadFiles() {
             try {
-                const res = await fetch(API_BASE + '/api/files');
+                const res = await authenticatedFetch(API_BASE + '/api/files');
+                if (res.status === 401) { triggerLogout(); return; }
                 if (res.ok) {
                     state.files = await res.json();
                     renderFiles();
@@ -547,7 +587,7 @@ const HTML = `<!DOCTYPE html>
             state.notes = newOrderedNotes;
             
             try {
-                await fetch(API_BASE + '/api/notes/reorder', {
+                await authenticatedFetch(API_BASE + '/api/notes/reorder', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ notes: state.notes })
@@ -573,7 +613,7 @@ const HTML = `<!DOCTYPE html>
         async function deleteNote(id) {
             if (!confirm('确定要删除该笔记吗？')) return;
             try {
-                const res = await fetch(API_BASE + '/api/notes/' + id, { method: 'DELETE' });
+                const res = await authenticatedFetch(API_BASE + '/api/notes/' + id, { method: 'DELETE' });
                 if (res.ok) {
                     if (state.currentNote && state.currentNote.id === id) {
                         state.currentNote = null;
@@ -618,7 +658,7 @@ const HTML = `<!DOCTYPE html>
             };
             
             try {
-                const res = await fetch(API_BASE + '/api/notes', {
+                const res = await authenticatedFetch(API_BASE + '/api/notes', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(note)
@@ -634,7 +674,7 @@ const HTML = `<!DOCTYPE html>
         
         async function selectNoteById(id) {
             try {
-                const res = await fetch(API_BASE + '/api/notes/' + id);
+                const res = await authenticatedFetch(API_BASE + '/api/notes/' + id);
                 if (res.ok) {
                     const fullNote = await res.json();
                     state.currentNote = fullNote;
@@ -681,7 +721,7 @@ const HTML = `<!DOCTYPE html>
             };
             
             try {
-                const res = await fetch(API_BASE + '/api/notes/' + updated.id, {
+                const res = await authenticatedFetch(API_BASE + '/api/notes/' + updated.id, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(updated)
@@ -711,7 +751,7 @@ const HTML = `<!DOCTYPE html>
         window.deleteFile = async function(id) {
             if (!confirm('确定删除？')) return;
             try {
-                const res = await fetch(API_BASE + '/api/files/' + id, { method: 'DELETE' });
+                const res = await authenticatedFetch(API_BASE + '/api/files/' + id, { method: 'DELETE' });
                 if (res.ok) await loadFiles();
             } catch (e) { console.error(e); }
         }
@@ -721,14 +761,12 @@ const HTML = `<!DOCTYPE html>
             alert('链接已复制！');
         }
         
-        // 核心函数：带有平滑动画与防闪烁保护的上传逻辑
         function uploadFileWithProgress(file) {
             if (!file) return;
             
             const formData = new FormData();
             formData.append('file', file);
             
-            // 切换为上传状态UI
             $('uploadArea').classList.add('uploading');
             $('uploadTextPrompt').textContent = '正在处理文件: ' + file.name;
             $('progressContainer').style.display = 'block';
@@ -739,11 +777,13 @@ const HTML = `<!DOCTYPE html>
             const xhr = new XMLHttpRequest();
             xhr.open('POST', API_BASE + '/api/files', true);
             
-            // 真正捕获上传网络事件
+            // 附带认证密码
+            const pwd = localStorage.getItem('notepages_pwd') || '';
+            xhr.setRequestHeader('Authorization', pwd);
+            
             xhr.upload.addEventListener('progress', function(event) {
                 if (event.lengthComputable) {
                     const percent = Math.round((event.loaded / event.total) * 100);
-                    // 预留最后5%用于服务器响应缓冲过渡
                     const displayPercent = Math.min(percent, 95);
                     $('progressBar').style.width = displayPercent + '%';
                     $('progressText').textContent = displayPercent + '%';
@@ -751,15 +791,14 @@ const HTML = `<!DOCTYPE html>
             });
             
             xhr.onload = function() {
+                if (xhr.status === 401) { triggerLogout(); return; }
                 if (xhr.status >= 200 && xhr.status < 300) {
-                    // 成功后，强制平滑拉满到100%并预留短暂动画定格
                     $('progressBar').style.width = '100%';
                     $('progressText').textContent = '100% 上传完成';
-                    
                     setTimeout(() => {
                         resetUploadUI();
                         loadFiles();
-                    }, 600); // 留出600毫秒用于看清进度条结束
+                    }, 600);
                 } else {
                     resetUploadUI();
                     alert('服务器存储失败');
@@ -782,8 +821,64 @@ const HTML = `<!DOCTYPE html>
             $('progressBar').style.width = '0%';
             $('fileInput').value = '';
         }
+
+        // 核心：密码验证流机制
+        async function attemptLogin() {
+            const inputPwd = $('passwordInput').value;
+            if(!inputPwd) return;
+
+            // 预测试拉取，验证输入的密码是否有效
+            const res = await fetch(API_BASE + '/api/notes', {
+                headers: { 'Authorization': inputPwd }
+            });
+
+            if (res.status === 401) {
+                alert('密码错误，拒绝访问！');
+                $('passwordInput').value = '';
+                $('passwordInput').focus();
+            } else if (res.ok) {
+                localStorage.setItem('notepages_pwd', inputPwd);
+                $('loginOverlay').style.display = 'none';
+                // 验证成功，初次加载受保护数据
+                loadNotes();
+                loadFiles();
+            } else {
+                alert('服务器内部异常');
+            }
+        }
+
+        function triggerLogout() {
+            localStorage.removeItem('notepages_pwd');
+            state.notes = [];
+            state.files = [];
+            state.currentNote = null;
+            $('notesList').innerHTML = '';
+            $('filesList').innerHTML = '';
+            $('editorEmpty').style.display = 'flex';
+            $('editorContent').style.display = 'none';
+            $('passwordInput').value = '';
+            $('loginOverlay').style.display = 'flex';
+        }
         
         document.addEventListener('DOMContentLoaded', function() {
+            // 初始化密码检查
+            const savedPwd = localStorage.getItem('notepages_pwd');
+            if (savedPwd) {
+                $('loginOverlay').style.display = 'none';
+                loadNotes();
+                loadFiles();
+            } else {
+                $('loginOverlay').style.display = 'flex';
+                $('passwordInput').focus();
+            }
+
+            // 绑定登录事件
+            $('loginBtn').onclick = attemptLogin;
+            $('passwordInput').onkeydown = function(e) { if(e.key === 'Enter') attemptLogin(); };
+            $('logoutBtn').onclick = function() {
+                if(confirm('确定注销并退出本次登录吗？')) { triggerLogout(); }
+            };
+
             $('navNotes').onclick = function() { switchTab('notes'); };
             $('navFiles').onclick = function() { switchTab('files'); };
             $('addNoteBtn').onclick = createNote;
@@ -795,7 +890,6 @@ const HTML = `<!DOCTYPE html>
                 markAsUnsaved();
             };
             
-            // 上传区域交互绑定
             $('uploadArea').onclick = function() { 
                 if (!$('uploadArea').classList.contains('uploading')) {
                     $('fileInput').click(); 
@@ -807,7 +901,6 @@ const HTML = `<!DOCTYPE html>
                 uploadFileWithProgress(file);
             };
             
-            // 拖拽上传支持
             const box = $('uploadArea');
             box.addEventListener('dragover', (e) => { e.preventDefault(); });
             box.addEventListener('drop', (e) => {
@@ -817,9 +910,6 @@ const HTML = `<!DOCTYPE html>
                     uploadFileWithProgress(file);
                 }
             });
-            
-            loadNotes();
-            loadFiles();
         });
     </script>
 </body>
@@ -837,6 +927,7 @@ export default {
     if (url.pathname.startsWith('/api/files')) {
       return handleFiles(request, env);
     }
+    // 下载链接：绕过密码鉴权处理器
     if (url.pathname.startsWith('/download/')) {
       return handleDownload(request, env);
     }
