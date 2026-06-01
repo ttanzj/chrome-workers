@@ -43,7 +43,7 @@ NotePages 是一个基于 Cloudflare Workers 和 S3 协议（如 Backblaze B2、
 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)，依次点击 **"Workers & Pages"** -> **"Create"** -> **"Create Worker"**。
 2. 为你的 Worker 起一个名字（例如 `notepages`），点击 **"Deploy"**。
 3. 部署成功后，点击 **"Edit Code"** 进入在线编辑器。
-4. 清空编辑器中原有的默认代码，将本项目修改好的完整 `index.js` 代码全部复制并粘贴进去。
+4. 清空编辑器中原有的默认代码，将本项目修改好的完整代码全部复制并粘贴进去。
 5. 点击右上角的 **"Save and Deploy"**。
 
 ### 第三步：配置环境变量
