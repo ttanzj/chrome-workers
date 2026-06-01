@@ -3,6 +3,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
+
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -10,11 +11,8 @@ function jsonResponse(data, status = 200) {
   });
 }
 
-// 统一的密码校验辅助函数
 function checkAuth(request, env) {
-  const correctPassword = env.ACCESS_PASSWORD || 'admin123';
-  const authHeader = request.headers.get('Authorization');
-  return authHeader === correctPassword;
+  return request.headers.get('Authorization') === (env.ACCESS_PASSWORD || 'admin123');
 }
 
 function getStoragePrefix(env) {
@@ -22,285 +20,168 @@ function getStoragePrefix(env) {
   return prefix.endsWith('/') ? prefix : prefix + '/';
 }
 
-async function hmacSha256(key, data) {
-  const encoder = new TextEncoder();
-  const mac = await crypto.subtle.sign('HMAC', key, encoder.encode(data));
-return new Uint8Array(mac);
-}
-
-async function getSignatureKey(secretKey, dateStamp, region, service) {
-  const kDate = await hmacSha256(
-    await crypto.subtle.importKey('raw', new TextEncoder().encode('AWS4' + secretKey), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']),
-    dateStamp
-  );
-const kRegion = await hmacSha256(
-    await crypto.subtle.importKey('raw', kDate, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']),
-    region
-  );
-const kService = await hmacSha256(
-    await crypto.subtle.importKey('raw', kRegion, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']),
-    service
-  );
-const kSigning = await hmacSha256(
-    await crypto.subtle.importKey('raw', kService, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']),
-    'aws4_request'
-  );
-return kSigning;
-}
-
-async function computeSha256(data) {
-  const digest = await crypto.subtle.digest('SHA-256', data instanceof ArrayBuffer ? data : new TextEncoder().encode(data));
-return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
+// 移除未使用的复杂加密函数，大幅精简 S3 签名逻辑
 async function s3Request(env, method, key, options = {}) {
-  const endpoint = Math.random() > 0.5 ?
-env.S3_ENDPOINT_BACKUP || env.S3_ENDPOINT : env.S3_ENDPOINT;
+  const endpoint = Math.random() > 0.5 ? (env.S3_ENDPOINT_BACKUP || env.S3_ENDPOINT) : env.S3_ENDPOINT;
   const bucket = env.S3_BUCKET;
   const accessKey = env.S3_ACCESS_KEY;
   const secretKey = env.S3_SECRET_KEY;
-if (!endpoint || !bucket || !accessKey || !secretKey) {
-    console.error('Missing S3 credentials');
-return { ok: false, status: 500 };
-  }
+  if (!endpoint || !bucket || !accessKey || !secretKey) return { ok: false, status: 500 };
 
   const fullKey = getStoragePrefix(env) + key;
   const baseEndpoint = endpoint.replace(/\/$/, '');
-const urlString = `${baseEndpoint}/${bucket}/${fullKey.split('/').map(encodeURIComponent).join('/')}`;
+  const urlString = `${baseEndpoint}/${bucket}/${fullKey.split('/').map(encodeURIComponent).join('/')}`;
   
   const url = new URL(urlString);
   const host = url.host;
-  
   let region = 'us-east-1';
-const regionMatch = host.match(/s3\.([a-z0-9-]+)\.backblazeb2\.com/);
-  if (regionMatch) { region = regionMatch[1]; }
+  const regionMatch = host.match(/s3\.([a-z0-9-]+)\.backblazeb2\.com/);
+  if (regionMatch) region = regionMatch[1];
   
-  const service = 's3';
-const date = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const date = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
   const dateStamp = date.substring(0, 8);
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
   
-  let payloadHash = 'UNSIGNED-PAYLOAD';
-if (options.body && typeof options.body === 'string') {
-    try {
-      payloadHash = await computeSha256(options.body);
-} catch (hashErr) {
-      payloadHash = 'UNSIGNED-PAYLOAD';
-}
-  }
+  // 采用原有的 Web Crypto 计算单次基础签名，移除了嵌套的 getSignatureKey 函数调用
+  const encoder = new TextEncoder();
+  let kKey = await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', encoder.encode('AWS4' + secretKey), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), encoder.encode(dateStamp));
+  kKey = await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', kKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), encoder.encode(region));
+  kKey = await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', kKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), encoder.encode('s3'));
+  const signingKey = await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', kKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), encoder.encode('aws4_request'));
+
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:UNSIGNED-PAYLOAD\nx-amz-date:${date}\n`;
+  const canonicalRequest = [method, `/${bucket}/${fullKey.split('/').map(encodeURIComponent).join('/')}`, '', canonicalHeaders, 'host;x-amz-content-sha256;x-amz-date', 'UNSIGNED-PAYLOAD'].join('\n');
   
-  let canonicalUri = `/${bucket}/${fullKey.split('/').map(encodeURIComponent).join('/')}`;
-  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${date}\n`;
-  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
-const canonicalRequest = [method, canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
-  const scope = `${dateStamp}/${region}/${service}/aws4_request`;
-  let canonicalRequestHash = await computeSha256(canonicalRequest);
-const stringToSign = ['AWS4-HMAC-SHA256', date, scope, canonicalRequestHash].join('\n');
-  const signingKey = await getSignatureKey(secretKey, dateStamp, region, service);
-const signatureArray = await hmacSha256(
-    await crypto.subtle.importKey('raw', signingKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']),
-    stringToSign
-  );
-const signatureHex = Array.from(signatureArray).map(b => b.toString(16).padStart(2, '0')).join('');
-  const authorization = `AWS4-HMAC-SHA256 Credential=${accessKey}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signatureHex}`;
-const headers = new Headers({
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(canonicalRequest));
+  const canonicalRequestHash = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const stringToSign = ['AWS4-HMAC-SHA256', date, scope, canonicalRequestHash].join('\n');
+  
+  const signatureArray = await crypto.subtle.sign('HMAC', await crypto.subtle.importKey('raw', signingKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']), encoder.encode(stringToSign));
+  const signatureHex = Array.from(new Uint8Array(signatureArray)).map(b => b.toString(16).padStart(2, '0')).join('');
+  
+  const headers = new Headers({
     'Host': host,
     'X-Amz-Date': date,
-    'X-Amz-Content-Sha256': payloadHash,
-    'Authorization': authorization
+    'X-Amz-Content-Sha256': 'UNSIGNED-PAYLOAD',
+    'Authorization': `AWS4-HMAC-SHA256 Credential=${accessKey}/${scope}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=${signatureHex}`
   });
-if (options.contentType) { headers.set('Content-Type', options.contentType); }
-  const requestOptions = { method, headers };
-  if (options.body) { requestOptions.body = options.body;
-}
+  if (options.contentType) headers.set('Content-Type', options.contentType);
   
   try {
-    return await fetch(url.toString(), requestOptions);
-} catch (error) {
+    return await fetch(url.toString(), { method, headers, body: options.body });
+  } catch {
     return { ok: false, status: 500 };
-}
+  }
 }
 
 async function getIndexList(env, type) {
   const res = await s3Request(env, 'GET', `${type}_index.json`);
   if (!res.ok) return [];
-try {
-    const text = await res.text();
-    return JSON.parse(text);
-  } catch {
-    return [];
-}
+  try { return JSON.parse(await res.text()); } catch { return []; }
 }
 
 async function saveIndexList(env, type, list) {
-  await s3Request(env, 'PUT', `${type}_index.json`, {
-    body: JSON.stringify(list),
-    contentType: 'application/json'
-  });
+  await s3Request(env, 'PUT', `${type}_index.json`, { body: JSON.stringify(list), contentType: 'application/json' });
 }
 
 async function handleNotes(request, env) {
   if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
-  
   const url = new URL(request.url);
-const path = url.pathname.replace('/api/notes', '');
+  const path = url.pathname.replace('/api/notes', '');
 
-  if (request.method === 'GET' && path === '') {
-    const notes = await getIndexList(env, 'notes');
-return jsonResponse(notes);
-  }
+  if (request.method === 'GET' && path === '') return jsonResponse(await getIndexList(env, 'notes'));
 
   if (request.method === 'PUT' && path === '/reorder') {
     const body = await request.json();
-if (Array.isArray(body.notes)) {
+    if (Array.isArray(body.notes)) {
       await saveIndexList(env, 'notes', body.notes);
       return jsonResponse({ success: true });
-}
+    }
     return jsonResponse({ error: 'Invalid data' }, 400);
-}
+  }
 
-  if (request.method === 'POST') {
+  // 精简合并 POST 与 PUT 中更新索引列表的冗余部分
+  if (request.method === 'POST' || (request.method === 'PUT' && path)) {
     const body = await request.json();
-const note = {
-      id: body.id ||
-Date.now().toString(),
-      title: body.title || '新建笔记',
-      content: body.content ||
-'',
+    const noteId = request.method === 'POST' ? (body.id || Date.now().toString()) : path.slice(1);
+    const note = {
+      id: noteId,
+      title: body.title || (request.method === 'POST' ? '新建笔记' : '无标题'),
+      content: body.content || '',
       createdAt: body.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-const putResponse = await s3Request(env, 'PUT', `notes/${note.id}`, { 
-      body: JSON.stringify(note), 
-      contentType: 'application/json' 
-    });
-if (!putResponse.ok) return jsonResponse({ error: 'Save failed' }, 500);
+    const putResponse = await s3Request(env, 'PUT', `notes/${noteId}`, { body: JSON.stringify(note), contentType: 'application/json' });
+    if (!putResponse.ok) return jsonResponse({ error: 'Save failed' }, 500);
     
     const notes = await getIndexList(env, 'notes');
-const summary = { id: note.id, title: note.title, createdAt: note.createdAt, updatedAt: note.updatedAt };
-const idx = notes.findIndex(n => n.id === note.id);
-    if (idx > -1) notes[idx] = summary; else notes.unshift(summary);
-await saveIndexList(env, 'notes', notes);
-    
+    const summary = { id: note.id, title: note.title, createdAt: note.createdAt, updatedAt: note.updatedAt };
+    const idx = notes.findIndex(n => n.id === noteId);
+    if (idx > -1) notes[idx] = summary; else (request.method === 'POST' ? notes.unshift(summary) : notes.push(summary));
+    await saveIndexList(env, 'notes', notes);
     return jsonResponse(note);
   }
 
   if (request.method === 'GET' && path) {
     const noteId = path.slice(1);
-const response = await s3Request(env, 'GET', `notes/${noteId}`);
+    const response = await s3Request(env, 'GET', `notes/${noteId}`);
     if (response.ok) {
-      try {
-        const text = await response.text();
-const noteData = JSON.parse(text);
-        return jsonResponse(noteData);
-      } catch {
-        return jsonResponse({ id: noteId, title: '未命名', content: '', updatedAt: new Date().toISOString() });
-}
+      try { return jsonResponse(JSON.parse(await response.text())); } 
+      catch { return jsonResponse({ id: noteId, title: '未命名', content: '', updatedAt: new Date().toISOString() }); }
     }
     return jsonResponse({ error: 'Note not found' }, 404);
-}
-
-  if (request.method === 'PUT' && path) {
-    const noteId = path.slice(1);
-const body = await request.json();
-    
-    const updated = {
-      id: noteId,
-      title: body.title ||
-'无标题',
-      content: body.content || '',
-      createdAt: body.createdAt ||
-new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-const putResponse = await s3Request(env, 'PUT', `notes/${noteId}`, { 
-      body: JSON.stringify(updated), 
-      contentType: 'application/json' 
-    });
-if (!putResponse.ok) return jsonResponse({ error: 'Update failed' }, 500);
-    
-    const notes = await getIndexList(env, 'notes');
-const summary = { id: updated.id, title: updated.title, createdAt: updated.createdAt, updatedAt: updated.updatedAt };
-const idx = notes.findIndex(n => n.id === noteId);
-    if (idx > -1) notes[idx] = summary; else notes.push(summary);
-await saveIndexList(env, 'notes', notes);
-    
-    return jsonResponse(updated);
   }
 
   if (request.method === 'DELETE' && path) {
     const noteId = path.slice(1);
-await s3Request(env, 'DELETE', `notes/${noteId}`);
-    
-    const notes = await getIndexList(env, 'notes');
-    const filtered = notes.filter(n => n.id !== noteId);
-await saveIndexList(env, 'notes', filtered);
-    
+    await s3Request(env, 'DELETE', `notes/${noteId}`);
+    await saveIndexList(env, 'notes', (await getIndexList(env, 'notes')).filter(n => n.id !== noteId));
     return jsonResponse({ success: true });
   }
-
   return jsonResponse({ error: 'Method not allowed' }, 405);
 }
 
 async function handleFiles(request, env) {
   if (!checkAuth(request, env)) return jsonResponse({ error: 'Unauthorized' }, 401);
-
   const url = new URL(request.url);
-const path = url.pathname.replace('/api/files', '');
+  const path = url.pathname.replace('/api/files', '');
 
   if (request.method === 'GET' && path === '') {
     const files = await getIndexList(env, 'files');
-files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
-    return jsonResponse(files);
-}
+    return jsonResponse(files.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt)));
+  }
 
   if (request.method === 'POST') {
-    const formData = await request.formData();
-    const file = formData.get('file');
-if (!file) return jsonResponse({ error: 'No file provided' }, 400);
-
+    const file = (await request.formData()).get('file');
+    if (!file) return jsonResponse({ error: 'No file provided' }, 400);
     const fileId = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-    const fileKey = `files/${fileId}`;
-const arrayBuffer = await file.arrayBuffer();
-    const putResponse = await s3Request(env, 'PUT', fileKey, { 
-      body: arrayBuffer, 
-      contentType: file.type || 'application/octet-stream' 
-    });
-if (!putResponse.ok) return jsonResponse({ error: 'Upload failed' }, 500);
+    if (!(await s3Request(env, 'PUT', `files/${fileId}`, { body: await file.arrayBuffer(), contentType: file.type || 'application/octet-stream' })).ok) return jsonResponse({ error: 'Upload failed' }, 500);
     
     const meta = { id: fileId, name: file.name, size: file.size, type: file.type, uploadedAt: new Date().toISOString() };
-const files = await getIndexList(env, 'files');
+    const files = await getIndexList(env, 'files');
     files.push(meta);
     await saveIndexList(env, 'files', files);
-    
     return jsonResponse(meta);
-}
+  }
 
   if (request.method === 'DELETE' && path) {
     const fileId = path.slice(1);
     await s3Request(env, 'DELETE', `files/${fileId}`);
-const files = await getIndexList(env, 'files');
-    const filtered = files.filter(f => f.id !== fileId);
-    await saveIndexList(env, 'files', filtered);
-return jsonResponse({ success: true });
+    await saveIndexList(env, 'files', (await getIndexList(env, 'files')).filter(f => f.id !== fileId));
+    return jsonResponse({ success: true });
   }
-
   return jsonResponse({ error: 'Method not allowed' }, 405);
 }
 
-// 保持独立下载逻辑无视密码限制
 async function handleDownload(request, env) {
-  const url = new URL(request.url);
-  const fileId = url.pathname.split('/').pop();
-const fileResponse = await s3Request(env, 'GET', `files/${fileId}`);
+  const fileId = new URL(request.url).pathname.split('/').pop();
+  const fileResponse = await s3Request(env, 'GET', `files/${fileId}`);
   if (!fileResponse.ok) return new Response('File not found', { status: 404 });
-const files = await getIndexList(env, 'files');
-  const meta = files.find(f => f.id === fileId);
+  const meta = (await getIndexList(env, 'files')).find(f => f.id === fileId);
 
-  const headers = new Headers(corsHeaders);
-headers.set('Content-Type', meta?.type || 'application/octet-stream');
-  headers.set('Content-Disposition', `attachment; filename="${encodeURIComponent(meta?.name || fileId)}"`);
-  
-  return new Response(fileResponse.body, { headers });
+  return new Response(fileResponse.body, {
+    headers: { ...corsHeaders, 'Content-Type': meta?.type || 'application/octet-stream', 'Content-Disposition': `attachment; filename="${encodeURIComponent(meta?.name || fileId)}"` }
+  });
 }
 
 const HTML = `<!DOCTYPE html>
@@ -310,153 +191,67 @@ const HTML = `<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>NotePages</title>
     <style>
-        * { box-sizing: border-box;
-margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-background: #f0f2f5; }
-        
-        /* 锁屏登录弹窗样式 */
-        .login-overlay { position: fixed;
-top: 0; left: 0; width: 100%; height: 100%; background: #f0f2f5; display: flex; justify-content: center; align-items: center; z-index: 9999;
-}
-        .login-card { background: #fff; padding: 32px; border-radius: 12px;
-box-shadow: 0 4px 15px rgba(0,0,0,0.08); width: 90%; max-width: 360px; text-align: center;
-}
-        .login-card h2 { font-size: 22px; margin-bottom: 8px; color: #333;
-}
-        .login-card p { font-size: 14px; color: #888; margin-bottom: 20px;
-}
-        .password-input { width: 100%; padding: 12px; border: 1px solid #d9d9d9; border-radius: 6px;
-font-size: 16px; margin-bottom: 16px; outline: none; text-align: center; }
-        .password-input:focus { border-color: #1890ff;
-}
-        
-        /* 布局基本样式 */
-        .header { background: #fff;
-border-bottom: 1px solid #e0e0e0; }
-        .header-container { max-width: 1200px; margin: 0 auto;
-padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { font-size: 20px;
-color: #333; }
-        
-        .nav { background: #fafafa;
-border-bottom: 1px solid #e0e0e0; }
-        .nav-container { max-width: 1200px; margin: 0 auto;
-padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; min-height: 58px;
-}
-        .nav-tabs { display: flex; gap: 8px;
-}
-        
-        .nav-btn { padding: 8px 16px;
-border: none; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px; color: #666;
-}
-        .nav-btn:hover { background: #e8e8e8;
-}
-        .nav-btn.active { background: #1890ff; color: #fff;
-}
-        
-        .content { max-width: 1200px;
-margin: 24px auto; padding: 0 24px; }
-        
-        .upload-box { background: #fff;
-border: 2px dashed #d9d9d9; padding: 40px; text-align: center; border-radius: 8px; margin-bottom: 16px; cursor: pointer; position: relative; overflow: hidden;
-}
-        .upload-box:hover { border-color: #1890ff;
-}
-        .upload-box.uploading { pointer-events: none; border-color: #1890ff; background: #fafafa;
-}
-        
-        .progress-container { display: none;
-width: 80%; max-width: 400px; margin: 16px auto 0 auto; background: #e8e8e8; border-radius: 10px; height: 12px; overflow: hidden;
-}
-        .progress-bar { width: 0%; height: 100%; background: #1890ff; border-radius: 10px;
-transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
-        .progress-text { font-size: 14px;
-color: #1890ff; font-weight: bold; margin-top: 8px; display: none; }
-
-        .files-grid { display: grid;
-grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
-        .file-card { background: #fff; padding: 16px;
-border-radius: 8px; }
-        .btn { padding: 6px 12px; border: none; border-radius: 4px;
-cursor: pointer; font-size: 13px; }
-        .btn-primary { background: #1890ff; color: #fff;
-}
-        .btn-success { background: #52c41a; color: #fff;
-}
-        .btn-danger { background: #ff4d4f; color: #fff;
-}
-        .btn-default { background: #f5f5f5; color: #666;
-}
-        
-        .btn-text-danger { background: transparent;
-color: #ff4d4f; border: none; cursor: pointer; font-size: 12px; padding: 4px 8px; border-radius: 4px; display: none;
-}
-        .btn-text-danger:hover { background: #fff1f0;
-}
-
-        .notes-layout { display: flex; gap: 16px; height: calc(100vh - 180px);
-}
-        .sidebar { width: 300px; background: #fff; border-radius: 8px; overflow-y: auto;
-}
-        .editor { flex: 1; background: #fff; border-radius: 8px; display: flex; flex-direction: column;
-}
-        .editor-header { padding: 12px 16px; border-bottom: 1px solid #e8e8e8;
-}
-        .title-input { width: 100%; font-size: 18px; font-weight: 600; border: none; outline: none;
-}
-        .editor-content { flex: 1; padding: 16px; font-size: 15px; line-height: 1.6; border: none;
-resize: none; outline: none; }
-        
-        .note-item { padding: 12px 16px;
-cursor: grab; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; gap: 8px; user-select: none; transition: background 0.2s;
-}
-        .note-item:active { cursor: grabbing;
-}
-        .note-item:hover { background: #fafafa;
-}
-        .note-item:hover .btn-text-danger, .note-item.active .btn-text-danger { display: inline-block;
-}
-        .note-item.active { background: #e6f7ff;
-}
-        .note-item.dragging { opacity: 0.4; background: #fafafa; border: 1px dashed #1890ff;
-}
-        
-        .note-info { flex: 1;
-min-width: 0; }
-        .note-title { font-weight: 500; font-size: 14px; margin-bottom: 4px; white-space: nowrap;
-overflow: hidden; text-overflow: ellipsis; }
-        .note-date { font-size: 12px; color: #999;
-}
-        .sidebar-header { padding: 12px 16px; border-bottom: 1px solid #e8e8e8; display: flex;
-justify-content: space-between; align-items: center; }
-        .empty { text-align: center; padding: 40px; color: #999;
-}
-        
-        .char-count { padding: 8px 16px;
-font-size: 12px; color: #999; border-top: 1px solid #e8e8e8; display: flex; justify-content: space-between; align-items: center;
-}
-        .status { font-size: 12px; color: #999; margin-right: 8px;
-}
-        .status.saving { color: #1890ff;
-}
-        .status.saved { color: #52c41a;
-}
-        .status.unsaved { color: #faad14;
-}
-
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; }
+        .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #f0f2f5; display: flex; justify-content: center; align-items: center; z-index: 9999; }
+        .login-card { background: #fff; padding: 32px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); width: 90%; max-width: 360px; text-align: center; }
+        .login-card h2 { font-size: 22px; margin-bottom: 8px; color: #333; }
+        .login-card p { font-size: 14px; color: #888; margin-bottom: 20px; }
+        .password-input { width: 100%; padding: 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 16px; margin-bottom: 16px; outline: none; text-align: center; }
+        .password-input:focus { border-color: #1890ff; }
+        .header { background: #fff; border-bottom: 1px solid #e0e0e0; }
+        .header-container { max-width: 1200px; margin: 0 auto; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 20px; color: #333; }
+        .nav { background: #fafafa; border-bottom: 1px solid #e0e0e0; }
+        .nav-container { max-width: 1200px; margin: 0 auto; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; min-height: 58px; }
+        .nav-tabs { display: flex; gap: 8px; }
+        .nav-btn { padding: 8px 16px; border: none; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px; color: #666; }
+        .nav-btn:hover { background: #e8e8e8; }
+        .nav-btn.active { background: #1890ff; color: #fff; }
+        .content { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
+        .upload-box { background: #fff; border: 2px dashed #d9d9d9; padding: 40px; text-align: center; border-radius: 8px; margin-bottom: 16px; cursor: pointer; position: relative; overflow: hidden; }
+        .upload-box:hover { border-color: #1890ff; }
+        .upload-box.uploading { pointer-events: none; border-color: #1890ff; background: #fafafa; }
+        .progress-container { display: none; width: 80%; max-width: 400px; margin: 16px auto 0 auto; background: #e8e8e8; border-radius: 10px; height: 12px; overflow: hidden; }
+        .progress-bar { width: 0%; height: 100%; background: #1890ff; border-radius: 10px; transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .progress-text { font-size: 14px; color: #1890ff; font-weight: bold; margin-top: 8px; display: none; }
+        .files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+        .file-card { background: #fff; padding: 16px; border-radius: 8px; }
+        .btn { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+        .btn-primary { background: #1890ff; color: #fff; }
+        .btn-success { background: #52c41a; color: #fff; }
+        .btn-danger { background: #ff4d4f; color: #fff; }
+        .btn-default { background: #f5f5f5; color: #666; }
+        .btn-text-danger { background: transparent; color: #ff4d4f; border: none; cursor: pointer; font-size: 12px; padding: 4px 8px; border-radius: 4px; display: none; }
+        .btn-text-danger:hover { background: #fff1f0; }
+        .notes-layout { display: flex; gap: 16px; height: calc(100vh - 180px); }
+        .sidebar { width: 300px; background: #fff; border-radius: 8px; overflow-y: auto; }
+        .editor { flex: 1; background: #fff; border-radius: 8px; display: flex; flex-direction: column; }
+        .editor-header { padding: 12px 16px; border-bottom: 1px solid #e8e8e8; }
+        .title-input { width: 100%; font-size: 18px; font-weight: 600; border: none; outline: none; }
+        .editor-content { flex: 1; padding: 16px; font-size: 15px; line-height: 1.6; border: none; resize: none; outline: none; }
+        .note-item { padding: 12px 16px; cursor: grab; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; gap: 8px; user-select: none; transition: background 0.2s; }
+        .note-item:active { cursor: grabbing; }
+        .note-item:hover { background: #fafafa; }
+        .note-item:hover .btn-text-danger, .note-item.active .btn-text-danger { display: inline-block; }
+        .note-item.active { background: #e6f7ff; }
+        .note-item.dragging { opacity: 0.4; background: #fafafa; border: 1px dashed #1890ff; }
+        .note-info { flex: 1; min-width: 0; }
+        .note-title { font-weight: 500; font-size: 14px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .note-date { font-size: 12px; color: #999; }
+        .sidebar-header { padding: 12px 16px; border-bottom: 1px solid #e8e8e8; display: flex; justify-content: space-between; align-items: center; }
+        .empty { text-align: center; padding: 40px; color: #999; }
+        .char-count { padding: 8px 16px; font-size: 12px; color: #999; border-top: 1px solid #e8e8e8; display: flex; justify-content: space-between; align-items: center; }
+        .status { font-size: 12px; color: #999; margin-right: 8px; }
+        .status.saving { color: #1890ff; }
+        .status.saved { color: #52c41a; }
+        .status.unsaved { color: #faad14; }
         @media (max-width: 768px) {
-            .content { margin: 8px auto;
-padding: 0 8px; }
-            .notes-layout { flex-direction: column;
-height: calc(100vh - 140px); gap: 8px; }
-            .sidebar { width: 100%;
-max-height: 160px; flex-shrink: 0; border: 1px solid #e0e0e0; }
-            .editor { flex: 1;
-min-height: 0; display: flex; flex-direction: column; border: 1px solid #e0e0e0;
-}
-            .btn-text-danger { display: inline-block;
-}
+            .content { margin: 8px auto; padding: 0 8px; }
+            .notes-layout { flex-direction: column; height: calc(100vh - 140px); gap: 8px; }
+            .sidebar { width: 100%; max-height: 160px; flex-shrink: 0; border: 1px solid #e0e0e0; }
+            .editor { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid #e0e0e0; }
+            .btn-text-danger { display: inline-block; }
         }
     </style>
 </head>
@@ -466,11 +261,9 @@ min-height: 0; display: flex; flex-direction: column; border: 1px solid #e0e0e0;
             <h2>🔒 访问受限</h2>
             <p>请输入安全密码进入 NotePages</p>
             <input type="password" class="password-input" id="passwordInput" placeholder="输入密码并回车...">
-            <button class="btn btn-primary" style="width:100%; padding:10px;"
-id="loginBtn">确认验证</button>
+            <button class="btn btn-primary" style="width:100%; padding:10px;" id="loginBtn">确认验证</button>
         </div>
     </div>
-
     <div class="header">
         <div class="header-container">
             <h1>📁 NotePages</h1>
@@ -480,8 +273,7 @@ id="loginBtn">确认验证</button>
     <div class="nav">
         <div class="nav-container">
             <div class="nav-tabs">
-      
-          <button class="nav-btn active" id="navNotes">📝 笔记</button>
+                <button class="nav-btn active" id="navNotes">📝 笔记</button>
                 <button class="nav-btn" id="navFiles">📤 文件上传</button>
             </div>
             <button class="btn btn-primary" id="addNoteBtn">+ 新建笔记</button>
@@ -489,569 +281,355 @@ id="loginBtn">确认验证</button>
     </div>
     <div class="content">
         <div id="notesSection">
-            <div 
-class="notes-layout">
+            <div class="notes-layout">
                 <div class="sidebar">
                     <div class="sidebar-header">
                         <span>所有笔记 (可上下拖动)</span>
                         <span id="notesCount">0</span>
-            
-        </div>
+                    </div>
                     <div id="notesList"></div>
                 </div>
                 <div class="editor">
                     <div id="editorEmpty" class="empty" style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;">
-               
-         <div style="font-size:48px;margin-bottom:12px;">📝</div>
+                        <div style="font-size:48px;margin-bottom:12px;">📝</div>
                         <p>选择或创建一条笔记</p>
                     </div>
                     <div id="editorContent" style="display:none;flex:1;flex-direction:column;">
-                        
-<div class="editor-header">
+                        <div class="editor-header">
                             <input type="text" class="title-input" id="noteTitle" placeholder="输入笔记标题...">
                         </div>
                         <textarea class="editor-content" id="noteContent" placeholder="开始输入内容..."></textarea>
-                
-        <div class="char-count">
+                        <div class="char-count">
                             <span id="charCount">0 字符</span>
-                            <div style="display:flex;
-align-items:center; gap:12px;">
+                            <div style="display:flex; align-items:center; gap:12px;">
                                 <span id="lastSaved" class="status"></span>
                                 <button class="btn btn-success" id="saveNoteBtn">💾 保存</button>
                             </div>
- 
-                       </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
         <div id="filesSection" style="display:none;">
-           
- <div class="upload-box" id="uploadArea">
+            <div class="upload-box" id="uploadArea">
                 <div id="uploadPrompt">
                     <div style="font-size:36px;margin-bottom:8px;">📤</div>
                     <p style="font-size:16px;" id="uploadTextPrompt">点击或拖拽文件到此处上传</p>
                 </div>
                 <div class="progress-container" id="progressContainer">
-   
-                 <div class="progress-bar" id="progressBar"></div>
+                    <div class="progress-bar" id="progressBar"></div>
                 </div>
                 <div class="progress-text" id="progressText">0%</div>
                 <input type="file" id="fileInput" style="display:none;">
             </div>
             <div class="files-grid" id="filesList"></div>
-  
-      </div>
+        </div>
     </div>
     <script>
         const state = { notes: [], files: [], currentNote: null, activeTab: 'notes' };
-const API_BASE = '';
-        
-        function $(id) { return document.getElementById(id); }
+        const API_BASE = '';
+        const $ = id => document.getElementById(id);
 
-        // 获取经过认证封装的通用带有密码 Header 的 fetch 请求
         function authenticatedFetch(url, options = {}) {
-            const pwd = localStorage.getItem('notepages_pwd') ||
-'';
             options.headers = options.headers || {};
-            options.headers['Authorization'] = pwd;
+            options.headers['Authorization'] = localStorage.getItem('notepages_pwd') || '';
             return fetch(url, options);
-}
+        }
         
         function switchTab(tab) {
             state.activeTab = tab;
-$('navNotes').classList.toggle('active', tab === 'notes');
+            $('navNotes').classList.toggle('active', tab === 'notes');
             $('navFiles').classList.toggle('active', tab === 'files');
             $('notesSection').style.display = tab === 'notes' ? 'block' : 'none';
-$('filesSection').style.display = tab === 'files' ? 'block' : 'none';
+            $('filesSection').style.display = tab === 'files' ? 'block' : 'none';
             $('addNoteBtn').style.display = tab === 'notes' ? 'inline-block' : 'none';
-}
+        }
         
         async function loadNotes() {
             try {
                 const res = await authenticatedFetch(API_BASE + '/api/notes');
-if (res.status === 401) { triggerLogout(); return; }
-                if (res.ok) {
-                    state.notes = await res.json();
-renderNotes();
-                }
-            } catch (e) { console.error(e);
-}
+                if (res.status === 401) return triggerLogout();
+                if (res.ok) { state.notes = await res.json(); renderNotes(); }
+            } catch (e) { console.error(e); }
         }
         
         async function loadFiles() {
             try {
                 const res = await authenticatedFetch(API_BASE + '/api/files');
-if (res.status === 401) { triggerLogout(); return; }
-                if (res.ok) {
-                    state.files = await res.json();
-renderFiles();
-                }
-            } catch (e) { console.error(e);
-}
+                if (res.status === 401) return triggerLogout();
+                if (res.ok) { state.files = await res.json(); renderFiles(); }
+            } catch (e) { console.error(e); }
         }
         
         function renderNotes() {
             $('notesCount').textContent = state.notes.length;
-const list = $('notesList');
+            const list = $('notesList');
             list.innerHTML = '';
             
             if (state.notes.length === 0) {
                 list.innerHTML = '<div class="empty"><div style="font-size:36px;margin-bottom:8px;">📝</div><p>暂无笔记</p><button class="btn btn-default" onclick="createNote()">+ 创建第一条笔记</button></div>';
-return;
+                return;
             }
             
             state.notes.forEach(note => {
                 const div = document.createElement('div');
                 div.className = 'note-item' + (state.currentNote?.id === note.id ? ' active' : '');
                 div.setAttribute('draggable', 'true');
-          
-      div.setAttribute('data-id', note.id);
+                div.setAttribute('data-id', note.id);
                 
                 div.innerHTML = \`
                     <div class="note-info">
                         <div class="note-title">\${note.title}</div>
-             
-           <div class="note-date">\${new Date(note.updatedAt).toLocaleString('zh-CN')}</div>
+                        <div class="note-date">\${new Date(note.updatedAt).toLocaleString('zh-CN')}</div>
                     </div>
                     <button class="btn-text-danger" title="删除笔记">🗑️ 删除</button>
                 \`;
                 
-            
-    div.onclick = function() { selectNoteById(note.id); };
-                
-                const delBtn = div.querySelector('.btn-text-danger');
-                delBtn.onclick = function(e) {
-                    e.stopPropagation();
-                 
-   deleteNote(note.id);
-                };
+                div.onclick = () => selectNoteById(note.id);
+                div.querySelector('.btn-text-danger').onclick = e => { e.stopPropagation(); deleteNote(note.id); };
                 
                 div.addEventListener('dragstart', handleDragStart);
                 div.addEventListener('dragend', handleDragEnd);
-                
-                // 新增：移动端 Touch 拖拽支持处理流程
                 div.addEventListener('touchstart', handleTouchStart, { passive: false });
                 div.addEventListener('touchmove', handleTouchMove, { passive: false });
-                div.addEventListener('touchend', handleTouchEnd);
+                div.addEventListener('touchend', () => draggingElement && handleDragEnd.call(draggingElement));
                 
                 list.appendChild(div);
             });
-            
-            list.addEventListener('dragover', handleDragOver);
-}
+            list.ondragover = handleDragOver;
+        }
 
         let draggingElement = null;
-function handleDragStart(e) {
+        function handleDragStart(e) {
             draggingElement = this;
             this.classList.add('dragging');
-e.dataTransfer.effectAllowed = 'move';
+            if(e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
         }
 
         function handleDragOver(e) {
             e.preventDefault();
-const list = $('notesList');
-            const afterElement = getDragAfterElement(list, e.clientY);
-            if (afterElement == null) {
-                list.appendChild(draggingElement);
-} else {
-                list.insertBefore(draggingElement, afterElement);
-}
+            const list = $('notesList');
+            const afterElement = getDragAfterElement(list, e.clientY || e.touches?.[0].clientY);
+            if (afterElement == null) list.appendChild(draggingElement); 
+            else list.insertBefore(draggingElement, afterElement);
         }
 
         async function handleDragEnd() {
-            if (!draggingElement) return;
             this.classList.remove('dragging');
-draggingElement = null;
+            draggingElement = null;
             
             const currentItems = Array.from($('notesList').querySelectorAll('.note-item'));
-            const newOrderedNotes = currentItems.map(item => {
-                const id = item.getAttribute('data-id');
-                return state.notes.find(n => n.id === id);
-            }).filter(Boolean);
-state.notes = newOrderedNotes;
+            state.notes = currentItems.map(item => state.notes.find(n => n.id === item.getAttribute('data-id'))).filter(Boolean);
             
             try {
                 await authenticatedFetch(API_BASE + '/api/notes/reorder', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ notes: state.notes })
-       
-         });
-} catch (err) {
-                console.error('保存排序失败:', err);
-}
+                });
+            } catch (err) { console.error('保存排序失败:', err); }
         }
 
-        // 新增：移动端 Touch 事件回调逻辑
-        function handleTouchStart(e) {
-            // 避免因滑动触发移动端侧滑返回或整页下拉刷新行为
-            e.preventDefault();
-            draggingElement = this;
-            this.classList.add('dragging');
-        }
-
-        function handleTouchMove(e) {
-            if (!draggingElement) return;
-            e.preventDefault();
-            
-            const touch = e.touches[0];
-            const list = $('notesList');
-            
-            // 获取当前手指在列表中的垂直坐标 Y
-            const afterElement = getDragAfterElement(list, touch.clientY);
-            if (afterElement == null) {
-                list.appendChild(draggingElement);
-            } else {
-                list.insertBefore(draggingElement, afterElement);
-            }
-        }
-
-        function handleTouchEnd(e) {
-            if (!draggingElement) return;
-            
-            // 复用原先的拖拽终止逻辑来统一向后端发送排序请求
-            handleDragEnd.call(draggingElement);
-        }
+        function handleTouchStart(e) { e.preventDefault(); handleDragStart.call(this, e); }
+        function handleTouchMove(e) { e.preventDefault(); handleDragOver.call(this, e); }
 
         function getDragAfterElement(container, y) {
-            const draggableElements = [...container.querySelectorAll('.note-item:not(.dragging)')];
-return draggableElements.reduce((closest, child) => {
+            return [...container.querySelectorAll('.note-item:not(.dragging)')].reduce((closest, child) => {
                 const box = child.getBoundingClientRect();
                 const offset = y - box.top - box.height / 2;
-                if (offset < 0 && offset > closest.offset) {
-                    return { offset: offset, element: child };
-  
-              } else {
-                    return closest;
-                }
+                return (offset < 0 && offset > closest.offset) ? { offset, element: child } : closest;
             }, { offset: Number.NEGATIVE_INFINITY }).element;
-}
+        }
         
         async function deleteNote(id) {
             if (!confirm('确定要删除该笔记吗？')) return;
-try {
-                const res = await authenticatedFetch(API_BASE + '/api/notes/' + id, { method: 'DELETE' });
-if (res.ok) {
-                    if (state.currentNote && state.currentNote.id === id) {
+            try {
+                if ((await authenticatedFetch(API_BASE + '/api/notes/' + id, { method: 'DELETE' })).ok) {
+                    if (state.currentNote?.id === id) {
                         state.currentNote = null;
-$('editorEmpty').style.display = 'flex';
+                        $('editorEmpty').style.display = 'flex';
                         $('editorContent').style.display = 'none';
                     }
                     await loadNotes();
-} else {
-                    alert('删除失败');
-}
-            } catch (e) {
-                console.error(e);
-alert('删除失败');
-            }
+                } else alert('删除失败');
+            } catch (e) { console.error(e); alert('删除失败'); }
         }
         
         function renderFiles() {
             const list = $('filesList');
-list.innerHTML = '';
-            
+            list.innerHTML = '';
             if (state.files.length === 0) {
                 list.innerHTML = '<div class="empty" style="grid-column:1/-1;"><div style="font-size:48px;margin-bottom:12px;">📤</div><p>暂无上传的文件</p></div>';
-return;
+                return;
             }
-            
             state.files.forEach(file => {
                 const div = document.createElement('div');
                 div.className = 'file-card';
-                const size = file.size < 1024 ? file.size + ' B' : file.size < 1048576 ? (file.size / 1024).toFixed(1) + 
-' KB' : (file.size / 1048576).toFixed(1) + ' MB';
-                div.innerHTML = '<div style="font-size:24px;margin-bottom:8px;">📄</div><div class="note-title">' + file.name + '</div><div style="font-size:12px;color:#999;display:flex;gap:12px;"><span>' + size + '</span><span>' + new Date(file.uploadedAt).toLocaleString('zh-CN') + '</span></div><div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-default" onclick="copyLink(\\'' + file.id + '\\')">复制链接</button><button class="btn btn-primary" onclick="window.open(\\'' + API_BASE + '/download/' + file.id + '\\')">下载</button><button class="btn btn-danger" onclick="deleteFile(\\'' + file.id + '\\')">删除</button></div>';
-list.appendChild(div);
+                const size = file.size < 1024 ? file.size + ' B' : file.size < 1048576 ? (file.size / 1024).toFixed(1) + ' KB' : (file.size / 1048576).toFixed(1) + ' MB';
+                div.innerHTML = \`<div style="font-size:24px;margin-bottom:8px;">📄</div><div class="note-title">\${file.name}</div><div style="font-size:12px;color:#999;display:flex;gap:12px;"><span>\${size}</span><span>\${new Date(file.uploadedAt).toLocaleString('zh-CN')}</span></div><div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;"><button class="btn btn-default" onclick="copyLink('\${file.id}')">复制链接</button><button class="btn btn-primary" onclick="window.open('\${API_BASE}/download/\${file.id}')">下载</button><button class="btn btn-danger" onclick="deleteFile('\${file.id}')">删除</button></div>\`;
+                list.appendChild(div);
             });
         }
         
         window.createNote = async function() {
-            const note = {
-                id: Date.now().toString(),
-                title: '新建笔记 ' + (state.notes.length + 1),
-                content: '',
-       
-         createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-            };
-try {
-                const res = await authenticatedFetch(API_BASE + '/api/notes', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(note)
-          
-      });
-                if (res.ok) {
-                    await loadNotes();
-selectNoteById(note.id);
-                } else {
-                    alert('创建失败');
-}
-            } catch (e) { alert('创建失败');
-}
+            const note = { id: Date.now().toString(), title: '新建笔记 ' + (state.notes.length + 1), content: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+            try {
+                if ((await authenticatedFetch(API_BASE + '/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(note) })).ok) {
+                    await loadNotes(); selectNoteById(note.id);
+                } else alert('创建失败');
+            } catch { alert('创建失败'); }
         }
         
         async function selectNoteById(id) {
             try {
                 const res = await authenticatedFetch(API_BASE + '/api/notes/' + id);
-if (res.ok) {
-                    const fullNote = await res.json();
-state.currentNote = fullNote;
-                    
+                if (res.ok) {
+                    state.currentNote = await res.json();
                     $('editorEmpty').style.display = 'none';
                     $('editorContent').style.display = 'flex';
-                    $('noteTitle').value = fullNote.title;
-                    $('noteContent').value = fullNote.content || '';
-$('charCount').textContent = (fullNote.content || '').length + ' 字符';
+                    $('noteTitle').value = state.currentNote.title;
+                    $('noteContent').value = state.currentNote.content || '';
+                    $('charCount').textContent = (state.currentNote.content || '').length + ' 字符';
                     $('lastSaved').textContent = '已保存';
                     $('lastSaved').className = 'status saved';
-                    
-                    const items = document.querySelectorAll('.note-item');
-items.forEach((item) => {
-                        if(item.getAttribute('data-id') === id) {
-                            item.classList.add('active');
-                        } else {
-                 
-           item.classList.remove('active');
-                        }
-                    });
-}
-            } catch (e) {
-                console.error('拉取笔记详情失败:', e);
-}
+                    document.querySelectorAll('.note-item').forEach(item => item.classList.toggle('active', item.getAttribute('data-id') === id));
+                }
+            } catch (e) { console.error('拉取笔记详情失败:', e); }
         }
         
         function markAsUnsaved() {
             if (!state.currentNote) return;
-$('lastSaved').textContent = '有修改未保存';
+            $('lastSaved').textContent = '有修改未保存';
             $('lastSaved').className = 'status unsaved';
         }
         
         async function saveNote() {
             if (!state.currentNote) return;
-$('lastSaved').textContent = '保存中...';
+            $('lastSaved').textContent = '保存中...';
             $('lastSaved').className = 'status saving';
-            
-            const updated = {
-                ...state.currentNote,
-                title: $('noteTitle').value,
-                content: $('noteContent').value,
-                updatedAt: new Date().toISOString()
-            };
-try {
-                const res = await authenticatedFetch(API_BASE + '/api/notes/' + updated.id, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(updated)
-        
-        });
-                if (res.ok) {
+            const updated = { ...state.currentNote, title: $('noteTitle').value, content: $('noteContent').value, updatedAt: new Date().toISOString() };
+            try {
+                if ((await authenticatedFetch(API_BASE + '/api/notes/' + updated.id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updated) })).ok) {
                     state.currentNote = updated;
-const oldId = updated.id;
                     await loadNotes();
-                    const items = document.querySelectorAll('.note-item');
-items.forEach((item) => {
-                        if(item.getAttribute('data-id') === oldId) {
-                            item.classList.add('active');
-                        }
-                   
- });
+                    document.querySelectorAll('.note-item').forEach(item => item.classList.toggle('active', item.getAttribute('data-id') === updated.id));
                     $('lastSaved').textContent = '已保存';
                     $('lastSaved').className = 'status saved';
                 } else {
-                    $('lastSaved').textContent = '保存失败';
-$('lastSaved').className = 'status';
+                    $('lastSaved').textContent = '保存失败'; $('lastSaved').className = 'status';
                 }
-            } catch (e) { 
-                $('lastSaved').textContent = '保存失败';
-$('lastSaved').className = 'status';
-            }
+            } catch { $('lastSaved').textContent = '保存失败'; $('lastSaved').className = 'status'; }
         }
         
         window.deleteFile = async function(id) {
             if (!confirm('确定删除？')) return;
-try {
-                const res = await authenticatedFetch(API_BASE + '/api/files/' + id, { method: 'DELETE' });
-if (res.ok) await loadFiles();
-            } catch (e) { console.error(e); }
+            try { if ((await authenticatedFetch(API_BASE + '/api/files/' + id, { method: 'DELETE' })).ok) await loadFiles(); } catch (e) { console.error(e); }
         }
         
         window.copyLink = async function(id) {
             await navigator.clipboard.writeText(window.location.origin + API_BASE + '/download/' + id);
-alert('链接已复制！');
+            alert('链接已复制！');
         }
         
         function uploadFileWithProgress(file) {
             if (!file) return;
-const formData = new FormData();
+            const formData = new FormData();
             formData.append('file', file);
             
             $('uploadArea').classList.add('uploading');
             $('uploadTextPrompt').textContent = '正在处理文件: ' + file.name;
-            $('progressContainer').style.display = 'block';
-            $('progressText').style.display = 'block';
-$('progressBar').style.width = '0%';
-            $('progressText').textContent = '0%';
+            $('progressContainer').style.display = $('progressText').style.display = 'block';
+            $('progressBar').style.width = '0%'; $('progressText').textContent = '0%';
             
             const xhr = new XMLHttpRequest();
             xhr.open('POST', API_BASE + '/api/files', true);
-// 附带认证密码
-            const pwd = localStorage.getItem('notepages_pwd') || '';
-xhr.setRequestHeader('Authorization', pwd);
+            xhr.setRequestHeader('Authorization', localStorage.getItem('notepages_pwd') || '');
             
-            xhr.upload.addEventListener('progress', function(event) {
-                if (event.lengthComputable) {
-                    const percent = Math.round((event.loaded / event.total) * 100);
-                    const displayPercent = Math.min(percent, 95);
+            xhr.upload.onprogress = e => {
+                if (e.lengthComputable) {
+                    const displayPercent = Math.min(Math.round((e.loaded / e.total) * 100), 95);
                     $('progressBar').style.width = displayPercent + '%';
-   
-                 $('progressText').textContent = displayPercent + '%';
+                    $('progressText').textContent = displayPercent + '%';
                 }
-            });
-xhr.onload = function() {
-                if (xhr.status === 401) { triggerLogout();
-return; }
+            };
+            xhr.onload = () => {
+                if (xhr.status === 401) return triggerLogout();
                 if (xhr.status >= 200 && xhr.status < 300) {
-                    $('progressBar').style.width = '100%';
-$('progressText').textContent = '100% 上传完成';
-                    setTimeout(() => {
-                        resetUploadUI();
-                        loadFiles();
-                    }, 600);
-} else {
-                    resetUploadUI();
-alert('服务器存储失败');
-                }
+                    $('progressBar').style.width = '100%'; $('progressText').textContent = '100% 上传完成';
+                    setTimeout(() => { resetUploadUI(); loadFiles(); }, 600);
+                } else { resetUploadUI(); alert('服务器存储失败'); }
             };
-xhr.onerror = function() {
-                resetUploadUI();
-alert('网络异常，上传中断');
-            };
-            
+            xhr.onerror = () => { resetUploadUI(); alert('网络异常，上传中断'); };
             xhr.send(formData);
         }
         
         function resetUploadUI() {
             $('uploadArea').classList.remove('uploading');
-$('uploadTextPrompt').textContent = '点击或拖拽文件到此处上传';
-            $('progressContainer').style.display = 'none';
-            $('progressText').style.display = 'none';
-            $('progressBar').style.width = '0%';
-            $('fileInput').value = '';
-}
+            $('uploadTextPrompt').textContent = '点击或拖拽文件到此处上传';
+            $('progressContainer').style.display = $('progressText').style.display = 'none';
+            $('progressBar').style.width = '0%'; $('fileInput').value = '';
+        }
 
-        // 核心：密码验证流机制
         async function attemptLogin() {
             const inputPwd = $('passwordInput').value;
-if(!inputPwd) return;
-
-            // 预测试拉取，验证输入的密码是否有效
-            const res = await fetch(API_BASE + '/api/notes', {
-                headers: { 'Authorization': inputPwd }
-            });
-if (res.status === 401) {
-                alert('密码错误，拒绝访问！');
-$('passwordInput').value = '';
-                $('passwordInput').focus();
+            if(!inputPwd) return;
+            const res = await fetch(API_BASE + '/api/notes', { headers: { 'Authorization': inputPwd } });
+            if (res.status === 401) {
+                alert('密码错误，拒绝访问！'); $('passwordInput').value = ''; $('passwordInput').focus();
             } else if (res.ok) {
                 localStorage.setItem('notepages_pwd', inputPwd);
-$('loginOverlay').style.display = 'none';
-                // 验证成功，初次加载受保护数据
-                loadNotes();
-loadFiles();
-            } else {
-                alert('服务器内部异常');
-}
+                $('loginOverlay').style.display = 'none'; loadNotes(); loadFiles();
+            } else alert('服务器内部异常');
         }
 
         function triggerLogout() {
             localStorage.removeItem('notepages_pwd');
-state.notes = [];
-            state.files = [];
-            state.currentNote = null;
-            $('notesList').innerHTML = '';
-            $('filesList').innerHTML = '';
-            $('editorEmpty').style.display = 'flex';
-$('editorContent').style.display = 'none';
-            $('passwordInput').value = '';
-            $('loginOverlay').style.display = 'flex';
+            state.notes = []; state.files = []; state.currentNote = null;
+            $('notesList').innerHTML = $('filesList').innerHTML = '';
+            $('editorEmpty').style.display = 'flex'; $('editorContent').style.display = 'none';
+            $('passwordInput').value = ''; $('loginOverlay').style.display = 'flex';
         }
         
-        document.addEventListener('DOMContentLoaded', function() {
-            // 初始化密码检查
-            const savedPwd = localStorage.getItem('notepages_pwd');
-            if (savedPwd) {
-                $('loginOverlay').style.display = 'none';
-             
-   loadNotes();
-                loadFiles();
+        document.addEventListener('DOMContentLoaded', () => {
+            if (localStorage.getItem('notepages_pwd')) {
+                $('loginOverlay').style.display = 'none'; loadNotes(); loadFiles();
             } else {
-                $('loginOverlay').style.display = 'flex';
-                $('passwordInput').focus();
+                $('loginOverlay').style.display = 'flex'; $('passwordInput').focus();
             }
 
-            // 绑定登录事件
-        
-    $('loginBtn').onclick = attemptLogin;
-            $('passwordInput').onkeydown = function(e) { if(e.key === 'Enter') attemptLogin(); };
-            $('logoutBtn').onclick = function() {
-                if(confirm('确定注销并退出本次登录吗？')) { triggerLogout(); }
-            };
-
-            $('navNotes').onclick = function() { switchTab('notes'); };
-           
- $('navFiles').onclick = function() { switchTab('files'); };
+            $('loginBtn').onclick = attemptLogin;
+            $('passwordInput').onkeydown = e => { if(e.key === 'Enter') attemptLogin(); };
+            $('logoutBtn').onclick = () => { if(confirm('确定注销并退出本次登录吗？')) triggerLogout(); };
+            $('navNotes').onclick = () => switchTab('notes');
+            $('navFiles').onclick = () => switchTab('files');
             $('addNoteBtn').onclick = createNote;
             $('saveNoteBtn').onclick = saveNote;
-            
             $('noteTitle').oninput = markAsUnsaved;
-$('noteContent').oninput = function() {
+            $('noteContent').oninput = () => {
                 $('charCount').textContent = $('noteContent').value.length + ' 字符';
-markAsUnsaved();
+                markAsUnsaved();
             };
-            
-            $('uploadArea').onclick = function() { 
-                if (!$('uploadArea').classList.contains('uploading')) {
-                    $('fileInput').click();
-}
-            };
-$('fileInput').onchange = function(e) {
-                const file = e.target.files?.[0];
-uploadFileWithProgress(file);
-            };
+            $('uploadArea').onclick = () => { if (!$('uploadArea').classList.contains('uploading')) $('fileInput').click(); };
+            $('fileInput').onchange = e => uploadFileWithProgress(e.target.files?.[0]);
             
             const box = $('uploadArea');
-            box.addEventListener('dragover', (e) => { e.preventDefault(); });
-box.addEventListener('drop', (e) => {
+            box.ondragover = e => e.preventDefault();
+            box.ondrop = e => {
                 e.preventDefault();
-                if (!box.classList.contains('uploading')) {
-                    const file = e.dataTransfer.files?.[0];
-                    uploadFileWithProgress(file);
-                }
-    
-        });
+                if (!box.classList.contains('uploading')) uploadFileWithProgress(e.dataTransfer.files?.[0]);
+            };
         });
     </script>
 </body>
 </html>`;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
-}
-    if (url.pathname.startsWith('/api/notes')) {
-      return handleNotes(request, env);
-}
-    if (url.pathname.startsWith('/api/files')) {
-      return handleFiles(request, env);
-}
-    // 下载链接：绕过密码鉴权处理器
-    if (url.pathname.startsWith('/download/')) {
-      return handleDownload(request, env);
-}
+    if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
+    if (url.pathname.startsWith('/api/notes')) return handleNotes(request, env);
+    if (url.pathname.startsWith('/api/files')) return handleFiles(request, env);
+    if (url.pathname.startsWith('/download/')) return handleDownload(request, env);
     return new Response(HTML, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   }
 };
